@@ -1,0 +1,91 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens (stored as RGB triplets for Tailwind rgb(var()) usage) */
+:root {
+  --bg: 240 247 255;
+  --surface: 255 255 255;
+  --card: 232 244 253;
+  --border: 184 217 240;
+  --accent: 0 119 182;
+  --accent2: 0 119 182;
+  --success: 0 230 118;
+  --warning: 255 160 0;
+  --danger: 255 82 82;
+  --text: 15 23 42;
+  --muted: 71 85 105;
+
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(0, 119, 182, 0.14);
+  --toast-bg: rgba(255, 255, 255, 0.86);
+  --toast-border: rgba(184, 217, 240, 0.9);
+  --skel-base: rgba(71, 85, 105, 0.18);
+  --skel-highlight: rgba(0, 119, 182, 0.12);
+}
+
+.dark {
+  --bg: 7 13 26;
+  --surface: 15 24 41;
+  --card: 17 31 53;
+  --border: 30 58 95;
+  --accent: 0 180 216;
+  --accent2: 0 119 182;
+  --success: 0 230 118;
+  --warning: 255 160 0;
+  --danger: 255 82 82;
+  --text: 226 232 240;
+  --muted: 100 116 139;
+
+  --glass-bg: rgba(17, 31, 53, 0.7);
+  --glass-border: rgba(0, 180, 216, 0.15);
+  --toast-bg: rgba(15, 24, 41, 0.92);
+  --toast-border: rgba(0, 180, 216, 0.15);
+  --skel-base: rgba(100, 116, 139, 0.22);
+  --skel-highlight: rgba(0, 180, 216, 0.12);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  transition: all 0.3s ease;
+}
+
+.glass-card {
+  backdrop-filter: blur(14px);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+}
+
+/* Dashboard animated mesh */
+@keyframes meshShift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-2%, -1%, 0) scale(1.04);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.mesh-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(800px 500px at 20% 10%, rgba(0, 180, 216, 0.25), transparent 55%),
+    radial-gradient(700px 450px at 80% 30%, rgba(0, 119, 182, 0.22), transparent 55%),
+    radial-gradient(900px 600px at 50% 90%, rgba(0, 230, 118, 0.12), transparent 55%);
+  filter: blur(14px);
+  animation: meshShift 14s ease-in-out infinite;
+}
