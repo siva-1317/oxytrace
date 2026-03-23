@@ -17,10 +17,12 @@ import {
   YAxis
 } from 'recharts';
 import { useAuth } from '../context/AuthContext.jsx';
-import { apiJson, formatDateTime } from '../lib/api.js';
+import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
 import { supabase } from '../lib/supabaseClient.js';
 import AIAnalysisPanel from '../components/AIAnalysisPanel.jsx';
-import Spinner from '../components/Spinner.jsx';
+import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
+import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
+import { downloadCylinderDetailReportPdf } from '../lib/reportPrint.js';
 
 function Modal({ open, title, children, onClose }) {
   if (!open) return null;
@@ -56,8 +58,9 @@ function TooltipBox({ active, payload, label }) {
 export default function CylinderDetail() {
   const { id } = useParams();
   const { accessToken } = useAuth();
-  const [detail, setDetail] = useState(null);
-  const [readings, setReadings] = useState([]);
+  const detailCacheKey = `/api/cylinders/${id}`;
+  const [detail, setDetail] = useState(() => getCachedData(detailCacheKey)?.cylinder || null);
+  const [readings, setReadings] = useState(() => getCachedData(`/api/readings/${id}?range=1d`)?.readings || []);
   const [range, setRange] = useState('1d');
   const [refills, setRefills] = useState([]);
   const [openRefill, setOpenRefill] = useState(false);
@@ -68,7 +71,7 @@ export default function CylinderDetail() {
     let cancelled = false;
     async function load() {
       try {
-        const data = await apiJson(`/api/cylinders/${id}`, { token: accessToken });
+        const data = await apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey });
         if (cancelled) return;
         setDetail(data.cylinder);
         setRefills(data.refills || []);
@@ -87,7 +90,10 @@ export default function CylinderDetail() {
     let cancelled = false;
     async function load() {
       try {
-        const data = await apiJson(`/api/readings/${id}?range=${range}`, { token: accessToken });
+        const data = await apiJson(`/api/readings/${id}?range=${range}`, {
+          token: accessToken,
+          cacheKey: `/api/readings/${id}?range=${range}`
+        });
         if (!cancelled) setReadings(data.readings || []);
       } catch {
         // ignore
@@ -157,9 +163,13 @@ export default function CylinderDetail() {
 
   async function toggleValve() {
     try {
-      const data = await apiJson(`/api/cylinders/${id}/valve`, { token: accessToken, method: 'PATCH' });
-      toast.success(`Valve now ${data.valve_open ? 'OPEN' : 'CLOSED'} (simulated)`);
-      const refreshed = await apiJson(`/api/cylinders/${id}`, { token: accessToken });
+      const data = await apiJson(`/api/cylinders/${id}/valve`, {
+        token: accessToken,
+        method: 'PATCH',
+        queueOffline: true
+      });
+      toast.success(data?.queued ? 'Valve update queued for sync' : `Valve now ${data.valve_open ? 'OPEN' : 'CLOSED'} (simulated)`);
+      const refreshed = await apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey });
       setDetail(refreshed.cylinder);
     } catch (e) {
       toast.error(e.message);
@@ -174,6 +184,7 @@ export default function CylinderDetail() {
       await apiJson('/api/refills', {
         token: accessToken,
         method: 'POST',
+        queueOffline: true,
         body: {
           cylinder_id: id,
           refilled_by: refillForm.refilled_by,
@@ -185,7 +196,7 @@ export default function CylinderDetail() {
       toast.success('Refill logged');
       setOpenRefill(false);
       setRefillForm({ refilled_by: '', new_weight_kg: '', notes: '' });
-      const refreshed = await apiJson(`/api/cylinders/${id}`, { token: accessToken });
+      const refreshed = await apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey });
       setDetail(refreshed.cylinder);
       setRefills(refreshed.refills || []);
     } catch (e) {
@@ -194,11 +205,7 @@ export default function CylinderDetail() {
   }
 
   if (!detail) {
-    return (
-    <div className="grid place-items-center rounded-2xl border border-border/50 bg-surface/70 p-10 shadow-sm backdrop-blur">
-      <Spinner label="Loading cylinder…" />
-    </div>
-  );
+    return <DashboardPageLoader variant="cylinder-detail" />;
   }
 
   return (
@@ -212,12 +219,15 @@ export default function CylinderDetail() {
                 {detail.ward} · {detail.location} · {detail.esp32_device_id}
               </div>
             </div>
-            <button
-              onClick={toggleValve}
-              className="rounded-xl border border-border/50 bg-surface px-4 py-2 text-sm font-medium transition hover:border-accent hover:text-accent shadow-sm"
-            >
-              Toggle valve
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <ReportDownloadButton onGenerate={() => downloadCylinderDetailReportPdf({ detail, refills, lineSeries, dailyUsage, range })} />
+              <button
+                onClick={toggleValve}
+                className="rounded-xl border border-border/50 bg-surface px-4 py-2 text-sm font-medium transition hover:border-accent hover:text-accent shadow-sm"
+              >
+                Toggle valve
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-4">

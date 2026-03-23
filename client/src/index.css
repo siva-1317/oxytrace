@@ -59,6 +59,42 @@ body {
   transition: all 0.3s ease;
 }
 
+@layer base {
+  .dark input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  .dark select,
+  .dark textarea {
+    background-color: rgba(7, 13, 26, 0.78);
+    border-color: rgba(51, 83, 124, 0.95);
+    color: rgb(var(--text));
+    box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.04);
+  }
+
+  .dark input:not([type='checkbox']):not([type='radio']):not([type='range'])::placeholder,
+  .dark textarea::placeholder {
+    color: rgba(148, 163, 184, 0.7);
+  }
+
+  .dark input:not([type='checkbox']):not([type='radio']):not([type='range']):hover,
+  .dark select:hover,
+  .dark textarea:hover {
+    border-color: rgba(71, 111, 166, 0.95);
+  }
+
+  .dark input:not([type='checkbox']):not([type='radio']):not([type='range']):focus,
+  .dark select:focus,
+  .dark textarea:focus {
+    border-color: rgb(var(--accent));
+    box-shadow:
+      0 0 0 1px rgba(var(--accent), 0.22),
+      0 0 0 4px rgba(var(--accent), 0.08);
+  }
+
+  .dark input[type='date']::-webkit-calendar-picker-indicator {
+    filter: invert(0.88) brightness(1.1);
+    opacity: 0.9;
+  }
+}
+
 .glass-card {
   backdrop-filter: blur(14px);
   background: var(--glass-bg);

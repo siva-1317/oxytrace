@@ -1,14 +1,15 @@
-﻿import React, { useMemo } from 'react';
-import { Bell, LogOut } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { Bell, LogOut, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import ThemeToggle from './ThemeToggle.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { Link, useLocation } from 'react-router-dom';
+import { useConnectivity } from '../hooks/useConnectivity.js';
 
 function Logo() {
   return (
     <div className="flex items-center gap-2">
       <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/15 ring-1 ring-accent/25">
-        <span className="font-semibold text-accent">O₂</span>
+        <span className="font-semibold text-accent">O2</span>
       </div>
       <div className="leading-tight">
         <div className="font-semibold">OxyTrace</div>
@@ -21,6 +22,7 @@ function Logo() {
 export default function Navbar({ title, recentAlerts = [], alertCount = 0 }) {
   const { user, signOut } = useAuth();
   const location = useLocation();
+  const { online, effectiveType, downlink, speedMbps, queueCount } = useConnectivity();
 
   const pageTitle = useMemo(() => {
     if (title) return title;
@@ -30,6 +32,7 @@ export default function Navbar({ title, recentAlerts = [], alertCount = 0 }) {
       '/alerts': 'Alerts',
       '/analytics': 'Analytics',
       '/refills': 'Refills',
+      '/stock': 'Stock',
       '/settings': 'Settings'
     };
     return map[location.pathname] || 'OxyTrace';
@@ -37,6 +40,13 @@ export default function Navbar({ title, recentAlerts = [], alertCount = 0 }) {
 
   const unresolved = recentAlerts.filter((a) => !a.is_resolved).slice(0, 5);
   const badge = Math.min(99, Number(alertCount || unresolved.length || 0));
+  const connectionLabel = online
+    ? speedMbps
+      ? `${speedMbps.toFixed(2)} Mbps`
+      : downlink
+      ? `${downlink.toFixed(1)} Mbps`
+      : effectiveType || 'Online'
+    : 'Not connected';
 
   return (
     <div className="sticky top-0 z-30 border-b border-border/50 bg-surface/70 backdrop-blur">
@@ -48,6 +58,22 @@ export default function Navbar({ title, recentAlerts = [], alertCount = 0 }) {
           <div className="text-sm font-medium text-text/90">{pageTitle}</div>
         </div>
         <div className="flex items-center gap-3">
+          <div
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm ${
+              online ? 'border-success/30 bg-success/10 text-success' : 'border-danger/30 bg-danger/10 text-danger'
+            }`}
+            title={online ? `Connection speed: ${connectionLabel}` : 'Internet not connected'}
+          >
+            {online ? <Wifi size={16} /> : <WifiOff size={16} />}
+            <span className="hidden sm:inline">{connectionLabel}</span>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="inline-flex items-center justify-center rounded-lg border border-border/60 bg-surface/60 p-2 text-text shadow-sm transition hover:border-accent/40"
+            title="Refresh page"
+          >
+            <RefreshCw size={18} />
+          </button>
           <div className="relative">
             <details className="group">
               <summary className="list-none">
@@ -70,22 +96,13 @@ export default function Navbar({ title, recentAlerts = [], alertCount = 0 }) {
                 ) : (
                   <div className="space-y-1">
                     {unresolved.map((a) => (
-                      <div
-                        key={a.id}
-                        className="rounded-lg border border-border/60 bg-card/40 px-2 py-2 text-sm"
-                      >
+                      <div key={a.id} className="rounded-lg border border-border/60 bg-card/40 px-2 py-2 text-sm">
                         <div className="flex items-center justify-between gap-2">
                           <div className="font-medium">
                             {a.cylinder?.cylinder_name ? `${a.cylinder.cylinder_name} · ` : ''}
                             {a.alert_type}
                           </div>
-                          <div
-                            className={
-                              a.severity === 'critical'
-                                ? 'text-danger text-xs'
-                                : 'text-warning text-xs'
-                            }
-                          >
+                          <div className={a.severity === 'critical' ? 'text-danger text-xs' : 'text-warning text-xs'}>
                             {a.severity}
                           </div>
                         </div>
@@ -126,6 +143,11 @@ export default function Navbar({ title, recentAlerts = [], alertCount = 0 }) {
           </details>
         </div>
       </div>
+      {!online ? (
+        <div className="border-t border-danger/20 bg-danger/10 px-4 py-2 text-center text-xs font-medium text-danger">
+          You are working offline until internet is connected. Offline changes are stored locally{queueCount ? ` (${queueCount} pending)` : ''} and will sync automatically.
+        </div>
+      ) : null}
     </div>
   );
 }

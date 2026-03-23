@@ -139,6 +139,35 @@ export async function analyzeStock(stockData, { apiKey, model = null, temperatur
   return generateWithRetry(prompt, { apiKey, model, temperature });
 }
 
+export async function generateSupplierOrderEmail(
+  emailContext,
+  { apiKey, model = null, temperature = 0.5 } = {}
+) {
+  const prompt = `You are OxyTrace AI.
+Generate a professional supplier order request email for a hospital.
+
+Return strict JSON with this shape:
+{
+  "subject": "Request Order",
+  "greeting": "Dear ...",
+  "intro": "short professional introduction",
+  "closing": "short professional closing paragraph"
+}
+
+Rules:
+- Subject must stay "Request Order"
+- Keep the tone formal, clear, and procurement-friendly
+- Mention the hospital name, supplier name, order number, invoice number, and expected delivery date
+- Do not include markdown
+- Do not include tables in the generated text because the app will render the ordered-items table separately
+- Keep each field concise and usable in an email
+
+Context:
+${JSON.stringify(emailContext)}`;
+
+  return generateWithRetry(prompt, { apiKey, model, temperature });
+}
+
 export async function testGemini(prompt, { apiKey, model = null, temperature = 0.4 } = {}) {
   return generateWithRetry(prompt || 'Say OK.', { apiKey, model, temperature });
 }

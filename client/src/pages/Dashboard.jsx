@@ -95,7 +95,7 @@ export default function Dashboard() {
           <div className="xl:col-span-2">
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold">Cylinders</div>
-              <div className="text-xs text-muted">Live updates via Supabase Realtime</div>
+              <div className="text-xs text-muted">Live updates</div>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {loading

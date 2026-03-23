@@ -1,39 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext.jsx';
+import { apiJson, getCachedData, setCachedData } from '../lib/api.js';
 import { useRealtime } from './useRealtime.js';
 
-const API_URL = import.meta.env.VITE_API_URL;
-
-export async function apiFetch(path, { token, method = 'GET', body, extraHeaders } = {}) {
-  const res = await fetch(`${API_URL}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(extraHeaders || {})
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  if (!res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed (${res.status})`);
-  }
-  return res.json();
-}
+const CYLINDERS_CACHE_KEY = '/api/cylinders';
 
 export function useCylinders() {
   const { accessToken } = useAuth();
-  const [cylinders, setCylinders] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cached = getCachedData(CYLINDERS_CACHE_KEY);
+  const [cylinders, setCylinders] = useState(() => cached?.cylinders || []);
+  const [loading, setLoading] = useState(() => !cached);
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
     if (!accessToken) return;
-    setLoading(true);
+    if (!getCachedData(CYLINDERS_CACHE_KEY)) setLoading(true);
     setError(null);
     try {
-      const data = await apiFetch('/api/cylinders', { token: accessToken });
+      const data = await apiJson('/api/cylinders', {
+        token: accessToken,
+        cacheKey: CYLINDERS_CACHE_KEY
+      });
       setCylinders(data.cylinders || []);
     } catch (e) {
       setError(e);
@@ -48,21 +36,25 @@ export function useCylinders() {
 
   useRealtime(
     (reading) => {
-      setCylinders((prev) =>
-        prev.map((c) =>
+      setCylinders((prev) => {
+        const next = prev.map((c) =>
           c.esp32_device_id === reading.esp32_device_id
             ? { ...c, latest_reading: reading, _livePulseAt: Date.now() }
             : c
-        )
-      );
+        );
+        setCachedData(CYLINDERS_CACHE_KEY, { cylinders: next });
+        return next;
+      });
     },
     (alert) => {
       toast(`New alert: ${alert.alert_type}`);
-      setCylinders((prev) =>
-        prev.map((c) =>
+      setCylinders((prev) => {
+        const next = prev.map((c) =>
           c.esp32_device_id === alert.esp32_device_id ? { ...c, _hasAlert: true } : c
-        )
-      );
+        );
+        setCachedData(CYLINDERS_CACHE_KEY, { cylinders: next });
+        return next;
+      });
     }
   );
 
@@ -80,4 +72,3 @@ export function useCylinders() {
 
   return { cylinders, setCylinders, loading, error, refresh, stats };
 }
-

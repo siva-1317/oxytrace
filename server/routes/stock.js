@@ -1,7 +1,8 @@
 import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
-import { analyzeStock } from '../services/geminiService.js';
+import { analyzeStock, generateSupplierOrderEmail } from '../services/geminiService.js';
+import { isMailConfigured, sendMail } from '../services/mailService.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -50,6 +51,128 @@ function buildGeneratedOrderNumber() {
   return `STK-${stamp}-${nonce}`;
 }
 
+function buildGeneratedInvoiceNumber() {
+  const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').replaceAll('T', '').replaceAll('Z', '').replaceAll('.', '').slice(0, 12);
+  const nonce = Math.random().toString(36).slice(2, 5).toUpperCase();
+  return `INV-${stamp}-${nonce}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function parseAiEmailJson(raw, fallback) {
+  try {
+    const parsed = JSON.parse(String(raw || '{}'));
+    return {
+      subject: parsed.subject || fallback.subject,
+      greeting: parsed.greeting || fallback.greeting,
+      intro: parsed.intro || fallback.intro,
+      closing: parsed.closing || fallback.closing
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function hospitalAddressLine(profile) {
+  return [
+    profile?.address_line_1,
+    profile?.address_line_2,
+    profile?.city,
+    profile?.state,
+    profile?.postal_code,
+    profile?.country
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+function buildOrderMailHtml({ mailContent, order, supplier, hospitalProfile }) {
+  const rows = (order.items || [])
+    .map(
+      (item) => `
+        <tr>
+          <td style="padding:10px;border:1px solid #d7e3f4;">${escapeHtml(item.cylinder_size)}</td>
+          <td style="padding:10px;border:1px solid #d7e3f4;">${escapeHtml(item.gas_type)}</td>
+          <td style="padding:10px;border:1px solid #d7e3f4;text-align:right;">${escapeHtml(item.quantity_ordered)}</td>
+        </tr>`
+    )
+    .join('');
+
+  const fromBits = [
+    hospitalProfile?.hospital_name,
+    hospitalProfile?.contact_name,
+    hospitalProfile?.email,
+    hospitalProfile?.phone,
+    hospitalAddressLine(hospitalProfile)
+  ].filter(Boolean);
+
+  return `
+    <div style="font-family:Inter,Arial,sans-serif;color:#0f172a;line-height:1.6;">
+      <p>${escapeHtml(mailContent.greeting)}</p>
+      <p>${escapeHtml(mailContent.intro)}</p>
+      <div style="margin:18px 0;padding:14px 16px;border:1px solid #d7e3f4;border-radius:14px;background:#f8fbff;">
+        <div><strong>Order Number:</strong> ${escapeHtml(order.order_number)}</div>
+        <div><strong>Invoice Number:</strong> ${escapeHtml(order.invoice_number)}</div>
+        <div><strong>Expected Delivery Date:</strong> ${escapeHtml(order.expected_delivery_date || '-')}</div>
+        <div><strong>Supplier:</strong> ${escapeHtml(supplier?.supplier_name || 'Supplier')}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin:18px 0;">
+        <thead>
+          <tr style="background:#eaf4fb;">
+            <th style="padding:10px;border:1px solid #d7e3f4;text-align:left;">Cylinder Size</th>
+            <th style="padding:10px;border:1px solid #d7e3f4;text-align:left;">Gas Type</th>
+            <th style="padding:10px;border:1px solid #d7e3f4;text-align:right;">Quantity</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p>${escapeHtml(mailContent.closing)}</p>
+      <div style="margin-top:20px;padding-top:14px;border-top:1px solid #d7e3f4;">
+        <div style="font-weight:700;">From:</div>
+        ${fromBits.map((bit) => `<div>${escapeHtml(bit)}</div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function buildOrderMailText({ mailContent, order, supplier, hospitalProfile }) {
+  const itemLines = (order.items || [])
+    .map((item) => `- ${item.cylinder_size} | ${item.gas_type} | Qty: ${item.quantity_ordered}`)
+    .join('\n');
+
+  return [
+    mailContent.greeting,
+    '',
+    mailContent.intro,
+    '',
+    `Order Number: ${order.order_number}`,
+    `Invoice Number: ${order.invoice_number}`,
+    `Supplier: ${supplier?.supplier_name || 'Supplier'}`,
+    `Expected Delivery Date: ${order.expected_delivery_date || '-'}`,
+    '',
+    'Ordered Items:',
+    itemLines,
+    '',
+    mailContent.closing,
+    '',
+    'From:',
+    hospitalProfile?.hospital_name || '',
+    hospitalProfile?.contact_name || '',
+    hospitalProfile?.email || '',
+    hospitalProfile?.phone || '',
+    hospitalAddressLine(hospitalProfile)
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function normalizeOrderItems(items) {
   const source = Array.isArray(items) ? items : [];
   return source.map((it) => {
@@ -75,7 +198,7 @@ function normalizeOrderItems(items) {
 async function fetchOrderWithRelations(id) {
   const { data, error } = await supabaseAdmin
     .from('stock_orders')
-    .select('*, suppliers (id, supplier_name, supplier_type), stock_order_items (*)')
+    .select('*, suppliers (id, supplier_name, supplier_type, email, contact_person), stock_order_items (*)')
     .eq('id', id)
     .single();
   if (error) throw new Error(error.message);
@@ -171,6 +294,15 @@ function mapOrderRow(r) {
     supplier: suppliers || null,
     items: stock_order_items || []
   };
+}
+
+function derivePaymentStatus(totalAmount, paidAmount, fallback = 'unpaid') {
+  const total = Math.max(0, Number(totalAmount || 0));
+  const paid = Math.max(0, Number(paidAmount || 0));
+  if (total <= 0) return fallback;
+  if (paid >= total) return 'paid';
+  if (paid > 0) return 'partial';
+  return 'unpaid';
 }
 
 router.get('/overview', async (_req, res, next) => {
@@ -346,16 +478,18 @@ router.get('/orders', async (req, res, next) => {
 router.post('/orders', async (req, res, next) => {
   try {
     const body = req.body || {};
+    const hospitalProfile = body.hospital_profile || {};
     const order = {
       order_number: String(body.order_number || '').trim() || buildGeneratedOrderNumber(),
       supplier_id: body.supplier_id || null,
       order_date: isoDate(body.order_date) || isoDate(new Date()),
       expected_delivery_date: isoDate(body.expected_delivery_date),
       status: String(body.status || 'pending'),
-      invoice_number: String(body.invoice_number || '').trim() || null,
+      invoice_number: String(body.invoice_number || '').trim() || buildGeneratedInvoiceNumber(),
       notes: String(body.notes || '').trim() || null,
-      payment_status: String(body.payment_status || 'unpaid'),
+      payment_status: 'unpaid',
       payment_method: body.payment_method || null,
+      paid_amount: Math.max(0, Number(body.paid_amount || 0)),
       total_amount: 0,
       total_cylinders_ordered: 0,
       total_cylinders_received: 0
@@ -376,6 +510,7 @@ router.post('/orders', async (req, res, next) => {
 
     order.total_cylinders_ordered = calcItems.reduce((a, it) => a + Number(it.quantity_ordered || 0), 0);
     order.total_amount = calcItems.reduce((a, it) => a + Number(it.total_price || 0), 0);
+    order.payment_status = derivePaymentStatus(order.total_amount, order.paid_amount, 'unpaid');
 
     const { data: created, error } = await supabaseAdmin.from('stock_orders').insert(order).select('*').single();
     if (error) throw new Error(error.message);
@@ -385,7 +520,59 @@ router.post('/orders', async (req, res, next) => {
     if (itemsErr) throw new Error(itemsErr.message);
 
     const out = await fetchOrderWithRelations(created.id);
-    res.status(201).json({ order: out });
+    let emailStatus = { attempted: false, sent: false, reason: null };
+
+    if (out?.supplier?.email) {
+      emailStatus.attempted = true;
+      if (!isMailConfigured()) {
+        emailStatus.reason = 'mail_not_configured';
+      } else {
+        try {
+          const fallbackContent = {
+            subject: 'Request Order',
+            greeting: `Dear ${out.supplier.contact_person || out.supplier.supplier_name || 'Supplier Team'},`,
+            intro: `We would like to place an oxygen cylinder order from ${hospitalProfile.hospital_name || 'our hospital'}. Please review the requested items below and arrange delivery by ${out.expected_delivery_date || 'the requested date'}.`,
+            closing: 'Please confirm availability, pricing, and dispatch timeline at your earliest convenience.'
+          };
+          const aiRaw = await generateSupplierOrderEmail(
+            {
+              hospital: hospitalProfile,
+              supplier: {
+                supplier_name: out.supplier.supplier_name,
+                contact_person: out.supplier.contact_person,
+                email: out.supplier.email
+              },
+              order: {
+                order_number: out.order_number,
+                invoice_number: out.invoice_number,
+                expected_delivery_date: out.expected_delivery_date,
+                items: (out.items || []).map((item) => ({
+                  cylinder_size: item.cylinder_size,
+                  gas_type: item.gas_type,
+                  quantity_ordered: item.quantity_ordered
+                }))
+              }
+            },
+            { ...overrides(req) }
+          );
+          const mailContent = parseAiEmailJson(aiRaw, fallbackContent);
+          await sendMail({
+            to: out.supplier.email,
+            subject: 'Request Order',
+            html: buildOrderMailHtml({ mailContent, order: out, supplier: out.supplier, hospitalProfile }),
+            text: buildOrderMailText({ mailContent, order: out, supplier: out.supplier, hospitalProfile }),
+            replyTo: hospitalProfile?.email || undefined
+          });
+          emailStatus.sent = true;
+        } catch (mailError) {
+          emailStatus.reason = String(mailError?.message || mailError);
+        }
+      }
+    } else {
+      emailStatus.reason = 'supplier_email_missing';
+    }
+
+    res.status(201).json({ order: out, email: emailStatus });
   } catch (e) {
     next(e);
   }
@@ -463,6 +650,13 @@ router.patch('/orders/:id', async (req, res, next) => {
       const insertRows = nextItems.map((item) => ({ ...item, order_id: id }));
       const { error: itemErr } = await supabaseAdmin.from('stock_order_items').insert(insertRows);
       if (itemErr) throw new Error(itemErr.message);
+    }
+
+    if ('paid_amount' in patch || 'total_amount' in patch) {
+      const nextTotal = 'total_amount' in patch ? Number(patch.total_amount || 0) : Number(existing.total_amount || 0);
+      const nextPaid = 'paid_amount' in patch ? Number(patch.paid_amount || 0) : Number(existing.paid_amount || 0);
+      patch.paid_amount = Math.max(0, nextPaid);
+      patch.payment_status = derivePaymentStatus(nextTotal, nextPaid, existing.payment_status || 'unpaid');
     }
 
     if (Object.keys(patch).length) {
@@ -587,6 +781,32 @@ router.patch('/orders/:id/deliver', async (req, res, next) => {
 router.delete('/orders/:id', async (req, res, next) => {
   try {
     const id = req.params.id;
+    const order = await fetchOrderWithRelations(id);
+
+    if (['delivered', 'partial'].includes(order.status)) {
+      for (const item of order.items || []) {
+        const receivedQty = Math.max(0, Number(item.quantity_received || 0));
+        if (!receivedQty) continue;
+
+        const delta =
+          String(item.condition || 'good') === 'damaged'
+            ? { quantity_damaged: -receivedQty }
+            : { quantity_full: -receivedQty };
+
+        await updateInventoryBuckets(
+          { cylinder_size: item.cylinder_size, gas_type: item.gas_type || 'oxygen' },
+          delta,
+          { unit_price: item.unit_price }
+        );
+      }
+
+      await supabaseAdmin
+        .from('stock_transactions')
+        .delete()
+        .eq('reference_id', order.order_number)
+        .eq('reference_type', 'order');
+    }
+
     const { error } = await supabaseAdmin.from('stock_orders').delete().eq('id', id);
     if (error) throw new Error(error.message);
     res.json({ ok: true });

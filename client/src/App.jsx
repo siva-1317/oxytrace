@@ -14,7 +14,7 @@ import Refills from './pages/Refills.jsx';
 import Settings from './pages/Settings.jsx';
 import Stock from './pages/Stock.jsx';
 import { useAuth } from './context/AuthContext.jsx';
-import { apiJson } from './lib/api.js';
+import { apiJson, getCachedData, initializeOfflineSync } from './lib/api.js';
 import Spinner from './components/Spinner.jsx';
 
 function ProtectedRoute({ children }) {
@@ -42,9 +42,14 @@ const pageVariants = {
 export default function App() {
   const { session, accessToken } = useAuth();
   const location = useLocation();
-  const [recentAlerts, setRecentAlerts] = useState([]);
-  const [activeAlertCount, setActiveAlertCount] = useState(0);
-  const [stockBadgeCount, setStockBadgeCount] = useState(0);
+  const [recentAlerts, setRecentAlerts] = useState(() => getCachedData('/api/alerts?status=active&limit=5')?.alerts || []);
+  const [activeAlertCount, setActiveAlertCount] = useState(() => Number(getCachedData('/api/alerts?status=active&limit=5')?.count || 0));
+  const [stockBadgeCount, setStockBadgeCount] = useState(() => {
+    const cached = getCachedData('/api/stock/overview');
+    return Number(cached?.kpis?.in_transit_orders || 0) + Number(cached?.kpis?.low_stock_alerts || 0);
+  });
+
+  useEffect(() => initializeOfflineSync(), []);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -52,8 +57,11 @@ export default function App() {
     async function load() {
       try {
         const [alertsData, stockData] = await Promise.all([
-          apiJson('/api/alerts?status=active&limit=5', { token: accessToken }),
-          apiJson('/api/stock/overview', { token: accessToken })
+          apiJson('/api/alerts?status=active&limit=5', {
+            token: accessToken,
+            cacheKey: '/api/alerts?status=active&limit=5'
+          }),
+          apiJson('/api/stock/overview', { token: accessToken, cacheKey: '/api/stock/overview' })
         ]);
         if (cancelled) return;
         setRecentAlerts(alertsData.alerts || []);

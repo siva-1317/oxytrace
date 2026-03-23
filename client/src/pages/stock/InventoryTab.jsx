@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { apiJson, formatDateTime } from '../../lib/api';
+import { apiJson, formatDateTime, getCachedData } from '../../lib/api';
 import { Plus, ArrowRightLeft, ShieldAlert, CheckCircle, Package, ArrowDownLeft, X } from 'lucide-react';
 import toast from 'react-hot-toast';
-import Skeleton from 'react-loading-skeleton';
 import { motion, AnimatePresence } from 'framer-motion';
+import { StockTableShell } from '../../components/DashboardPageLoader.jsx';
 
 export default function InventoryTab() {
   const { accessToken } = useAuth();
-  const [inventory, setInventory] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = '/api/stock/inventory';
+  const [inventory, setInventory] = useState(() => getCachedData(cacheKey)?.inventory || []);
+  const [loading, setLoading] = useState(() => !getCachedData(cacheKey));
 
   // Modals state
   const [activeInv, setActiveInv] = useState(null);
@@ -24,9 +25,9 @@ export default function InventoryTab() {
   const [irForm, setIrForm] = useState({ ward: '', quantity: 1, condition: 'good' });
 
   const fetchInventory = async () => {
-    setLoading(true);
+    if (!getCachedData(cacheKey)) setLoading(true);
     try {
-      const res = await apiJson('/api/stock/inventory', { token: accessToken });
+      const res = await apiJson('/api/stock/inventory', { token: accessToken, cacheKey });
       setInventory(res.inventory || []);
     } catch (err) {
       toast.error('Failed to load inventory');
@@ -54,6 +55,7 @@ export default function InventoryTab() {
       await apiJson('/api/stock/inventory/adjust', {
         method: 'POST',
         token: accessToken,
+        queueOffline: true,
         body: {
           cylinder_size: activeInv.cylinder_size,
           gas_type: activeInv.gas_type,
@@ -76,6 +78,7 @@ export default function InventoryTab() {
       await apiJson(endpoint, {
         method: 'POST',
         token: accessToken,
+        queueOffline: true,
         body: {
           cylinder_size: activeInv.cylinder_size,
           gas_type: activeInv.gas_type,
@@ -102,6 +105,10 @@ export default function InventoryTab() {
     setAdjustForm({ bucket: 'full', mode: 'add', quantity: 1, notes: '' });
     setShowAdjust(true);
   };
+
+  if (loading && !inventory.length) {
+    return <StockTableShell rows={5} columns={8} header={true} topbar={false} />;
+  }
 
   return (
     <div className="space-y-4 relative">
@@ -133,13 +140,7 @@ export default function InventoryTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {loading ? (
-                Array.from({ length: 4 }).map((_, i) => (
-                  <tr key={i}>
-                    <td colSpan="8" className="px-5 py-4"><Skeleton height={20} baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" /></td>
-                  </tr>
-                ))
-              ) : inventory.length > 0 ? (
+              {inventory.length > 0 ? (
                 inventory.map((inv) => {
                   const total = inv.quantity_full + inv.quantity_in_use + inv.quantity_empty + inv.quantity_damaged;
                   return (

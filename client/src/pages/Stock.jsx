@@ -5,6 +5,9 @@ import OrdersTab from './stock/OrdersTab.jsx';
 import SuppliersTab from './stock/SuppliersTab.jsx';
 import InventoryTab from './stock/InventoryTab.jsx';
 import TransactionsTab from './stock/TransactionsTab.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
+import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
+import { downloadStockReportPdf } from '../lib/reportPrint.js';
 
 const tabs = [
   { id: 'overview', label: 'Overview' },
@@ -15,6 +18,7 @@ const tabs = [
 ];
 
 export default function Stock() {
+  const { accessToken } = useAuth();
   const [activeTab, setActiveTab] = useState('overview');
 
   return (
@@ -22,9 +26,12 @@ export default function Stock() {
       <div className="mesh-bg" />
       
       <div className="relative z-10 flex flex-col space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-text">Stock & Procurement</h1>
-          <p className="text-sm text-muted">Manage oxygen cylinder inventory, orders, and suppliers</p>
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-text">Stock & Procurement</h1>
+            <p className="text-sm text-muted">Manage oxygen cylinder inventory, orders, and suppliers</p>
+          </div>
+          <ReportDownloadButton onGenerate={() => downloadStockReportPdf({ token: accessToken, activeTab })} />
         </div>
 
         {/* Tabs */}

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { TrendingUp, AlertCircle, Package, Truck, Sparkles } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
-import Skeleton from 'react-loading-skeleton';
 import ReactMarkdown from 'react-markdown';
 import toast from 'react-hot-toast';
 import { motion } from 'framer-motion';
@@ -9,6 +8,7 @@ import { useStockOverview } from '../../hooks/useStockOverview';
 import { useAuth } from '../../context/AuthContext';
 import { apiJson, formatDateTime } from '../../lib/api';
 import CountUp from 'react-countup';
+import { StockOverviewShell } from '../../components/DashboardPageLoader.jsx';
 
 const COLORS = ['#00B4D8', '#48CAE4', '#90E0EF', '#ADE8F4', '#CAF0F8'];
 
@@ -38,12 +38,7 @@ export default function OverviewTab() {
   };
 
   if (loading && !data) {
-    return (
-      <div className="space-y-6">
-        <Skeleton height={120} className="w-full" baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
-        <Skeleton height={300} className="w-full" baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
-      </div>
-    );
+    return <StockOverviewShell />;
   }
 
   const { kpis, inventory, upcoming_deliveries, recent_orders, monthly_spend, supplier_spend } = data || {};

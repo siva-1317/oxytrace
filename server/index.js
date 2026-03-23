@@ -5,7 +5,8 @@ import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
 app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 import authRoutes from './routes/auth.js';
 import cylinderRoutes from './routes/cylinders.js';
@@ -28,6 +29,16 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/stock', stockRoutes);
+
+app.get('/speed-test', (req, res) => {
+  const size = Math.min(1024 * 1024, Math.max(64 * 1024, Number(req.query.size || 256 * 1024)));
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Length', String(size));
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.send(Buffer.alloc(size, '0'));
+});
 
 app.use(errorHandler);
 

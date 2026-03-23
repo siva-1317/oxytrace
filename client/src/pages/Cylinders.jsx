@@ -5,8 +5,10 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useCylinders } from '../hooks/useCylinders.js';
 import { apiJson, formatDateTime } from '../lib/api.js';
 import CylinderCard from '../components/CylinderCard.jsx';
+import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
 import GasLevelBar from '../components/GasLevelBar.jsx';
-import Spinner from '../components/Spinner.jsx';
+import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
+import { downloadCylindersReportPdf } from '../lib/reportPrint.js';
 
 function Modal({ open, title, children, onClose }) {
   if (!open) return null;
@@ -74,18 +76,20 @@ export default function Cylinders() {
   }, [cylinders, q, ward, status, sortBy]);
 
   if (loading) {
-    return (
-      <div className="grid place-items-center rounded-2xl border border-border/50 bg-surface/70 p-10 shadow-sm backdrop-blur">
-        <Spinner label="Loading cylinders…" />
-      </div>
-    );
+    return <DashboardPageLoader variant="cylinders" />;
   }
 
   async function addCylinder(e) {
     e.preventDefault();
     try {
-      await apiJson('/api/cylinders', { token: accessToken, method: 'POST', body: form });
+      const res = await apiJson('/api/cylinders', {
+        token: accessToken,
+        method: 'POST',
+        body: form,
+        queueOffline: true
+      });
       toast.success('Cylinder added');
+      if (res?.queued) toast.success('Saved offline. It will sync automatically when internet is back.');
       setOpenAdd(false);
       setForm({ esp32_device_id: '', cylinder_name: '', ward: '', location: '', total_capacity_kg: 47, last_refill_date: '' });
       refresh();
@@ -140,12 +144,15 @@ export default function Cylinders() {
             {view === 'grid' ? 'Table View' : 'Grid View'}
           </button>
         </div>
-        <button
-          onClick={() => setOpenAdd(true)}
-          className="inline-flex items-center gap-2 justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90"
-        >
-          <Plus size={16} /> Add Cylinder
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <ReportDownloadButton onGenerate={() => downloadCylindersReportPdf({ cylinders: filtered, filters: { q, ward, status, sortBy } })} />
+          <button
+            onClick={() => setOpenAdd(true)}
+            className="inline-flex items-center gap-2 justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90"
+          >
+            <Plus size={16} /> Add Cylinder
+          </button>
+        </div>
       </div>
 
       {view === 'grid' ? (

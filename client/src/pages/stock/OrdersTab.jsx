@@ -1,29 +1,50 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { apiJson, formatDateTime } from '../../lib/api';
-import { Plus, Search, Filter, CheckCircle, Eye, Trash2, X, PlusCircle, MinusCircle } from 'lucide-react';
+import { apiJson, formatDateTime, getCachedData, setCachedData } from '../../lib/api';
+import { Expand, Plus, Search, Filter, CheckCircle, Eye, Trash2, X, PlusCircle, MinusCircle, ReceiptIndianRupee, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
-import Skeleton from 'react-loading-skeleton';
 import { motion, AnimatePresence } from 'framer-motion';
+import { StockTableShell } from '../../components/DashboardPageLoader.jsx';
+import { loadHospitalProfile } from '../../lib/hospitalProfile.js';
+
+const PAYMENT_HISTORY_MARKER = '__OXYTRACE_PAYMENT_HISTORY__';
+const buildGeneratedInvoiceNumber = () => {
+  const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').replaceAll('T', '').replaceAll('Z', '').replaceAll('.', '').slice(0, 12);
+  const nonce = Math.random().toString(36).slice(2, 5).toUpperCase();
+  return `INV-${stamp}-${nonce}`;
+};
 
 export default function OrdersTab() {
   const { accessToken } = useAuth();
-  const [orders, setOrders] = useState([]);
-  const [suppliers, setSuppliers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState(() => getCachedData('/api/stock/orders?page=1&pageSize=50')?.orders || []);
+  const [suppliers, setSuppliers] = useState(() => getCachedData('/api/stock/suppliers')?.suppliers || []);
+  const [loading, setLoading] = useState(() => !getCachedData('/api/stock/orders?page=1&pageSize=50'));
   const [search, setSearch] = useState('');
 
   // Modals state
   const [showNewOrder, setShowNewOrder] = useState(false);
-  const [showDeliver, setShowDeliver] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [showPaymentEditor, setShowPaymentEditor] = useState(false);
   const [activeOrder, setActiveOrder] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [selectedPaymentEntry, setSelectedPaymentEntry] = useState(null);
+  const [expandedProofImage, setExpandedProofImage] = useState(null);
+  const [paymentForm, setPaymentForm] = useState({
+    payment_amount: '',
+    payment_method: '',
+    paid_by: '',
+    invoice_number: '',
+    invoice_url: '',
+    notes: ''
+  });
+  const ordersCacheKey = '/api/stock/orders?page=1&pageSize=50';
 
   // New Order Form state
   const [orderForm, setOrderForm] = useState({
     supplier_id: '',
     order_date: new Date().toISOString().slice(0, 10),
     expected_delivery_date: '',
-    invoice_number: '',
+    invoice_number: buildGeneratedInvoiceNumber(),
     notes: '',
     items: [{ cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
   });
@@ -32,11 +53,11 @@ export default function OrdersTab() {
   const [deliverItems, setDeliverItems] = useState([]);
 
   const fetchOrders = async () => {
-    setLoading(true);
+    if (!getCachedData(ordersCacheKey)) setLoading(true);
     try {
       const [ordRes, supRes] = await Promise.all([
-        apiJson('/api/stock/orders?page=1&pageSize=50', { token: accessToken }),
-        apiJson('/api/stock/suppliers', { token: accessToken })
+        apiJson('/api/stock/orders?page=1&pageSize=50', { token: accessToken, cacheKey: ordersCacheKey }),
+        apiJson('/api/stock/suppliers', { token: accessToken, cacheKey: '/api/stock/suppliers' })
       ]);
       setOrders(ordRes.orders || []);
       setSuppliers(supRes.suppliers || []);
@@ -112,17 +133,35 @@ export default function OrdersTab() {
     if (!orderForm.items.length) return toast.error('Add at least one item');
     
     try {
-      await apiJson('/api/stock/orders', {
+      const hospitalProfile = loadHospitalProfile();
+      const res = await apiJson('/api/stock/orders', {
         method: 'POST',
         token: accessToken,
-        body: orderForm
+        queueOffline: true,
+        body: {
+          ...orderForm,
+          hospital_profile: hospitalProfile
+        }
       });
-      toast.success('Order created successfully');
+      if (res?.queued) {
+        toast.success('Order queued offline');
+      } else if (res?.email?.sent) {
+        toast.success('Order created and supplier email sent');
+      } else if (res?.email?.attempted) {
+        toast.success('Order created. Supplier email was not sent.');
+      } else {
+        toast.success('Order created successfully');
+      }
       setShowNewOrder(false);
       setOrderForm({
         supplier_id: '', order_date: new Date().toISOString().slice(0, 10), expected_delivery_date: '',
-        invoice_number: '', notes: '', items: [{ cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
+        invoice_number: buildGeneratedInvoiceNumber(),
+        notes: '',
+        items: [{ cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
       });
+      if (res?.email?.attempted && !res?.email?.sent && res?.email?.reason) {
+        toast.error(`Supplier email status: ${res.email.reason}`);
+      }
       fetchOrders();
     } catch (err) {
       toast.error('Failed to create order: ' + err.message);
@@ -130,40 +169,324 @@ export default function OrdersTab() {
   };
 
   // -- Deliver Handlers --
-  const openDeliverModal = (order) => {
-    setActiveOrder(order);
-    setDeliverItems(order.items.map(it => ({
-      id: it.id,
-      cylinder_size: it.cylinder_size,
-      gas_type: it.gas_type,
-      ordered: it.quantity_ordered,
-      quantity_received: it.quantity_ordered - (it.quantity_received || 0), // default to remaining
-      condition: 'good'
-    })));
-    setShowDeliver(true);
-  };
-
   const submitDeliver = async (e) => {
     e.preventDefault();
     try {
       await apiJson(`/api/stock/orders/${activeOrder.id}/deliver`, {
         method: 'PATCH',
         token: accessToken,
+        queueOffline: true,
         body: {
           items: deliverItems.map(it => ({
             id: it.id,
-            quantity_received: Number(it.quantity_received),
+            quantity_received: Number(it.received_so_far || 0) + Number(it.receive_now || 0),
             condition: it.condition
           }))
         }
       });
       toast.success('Delivery recorded');
-      setShowDeliver(false);
+      const refreshed = (await apiJson(`/api/stock/orders/${activeOrder.id}`, { token: accessToken })).order;
+      setActiveOrder(refreshed);
+      setDeliverItems(
+        (refreshed.items || []).map((it) => ({
+          id: it.id,
+          cylinder_size: it.cylinder_size,
+          gas_type: it.gas_type,
+          ordered: it.quantity_ordered,
+          received_so_far: Number(it.quantity_received || 0),
+          remaining: Math.max(0, Number(it.quantity_ordered || 0) - Number(it.quantity_received || 0)),
+          receive_now: 0,
+          condition: 'good'
+        }))
+      );
+      syncOrderIntoList(refreshed);
       fetchOrders();
     } catch (err) {
       toast.error('Failed to record delivery: ' + err.message);
     }
   };
+
+  const formatPaidByNotes = (notes, paidBy) => {
+    const cleaned = extractVisibleNotes(notes)
+      .split('\n')
+      .filter((line) => !line.startsWith('Payment by:'))
+      .join('\n')
+      .trim();
+    return [paidBy ? `Payment by: ${paidBy}` : '', cleaned].filter(Boolean).join('\n');
+  };
+
+  const extractPaymentHistory = (notes) => {
+    const raw = String(notes || '');
+    const markerIndex = raw.indexOf(PAYMENT_HISTORY_MARKER);
+    if (markerIndex === -1) return [];
+    const payload = raw.slice(markerIndex + PAYMENT_HISTORY_MARKER.length).trim();
+    if (!payload) return [];
+    try {
+      const parsed = JSON.parse(payload);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const extractVisibleNotes = (notes) => {
+    const raw = String(notes || '');
+    const markerIndex = raw.indexOf(PAYMENT_HISTORY_MARKER);
+    return (markerIndex === -1 ? raw : raw.slice(0, markerIndex)).trim();
+  };
+
+  const extractPaidBy = (notes) =>
+    extractVisibleNotes(notes)
+      .split('\n')
+      .find((line) => line.startsWith('Payment by:'))
+      ?.replace('Payment by:', '')
+      .trim() || '';
+
+  const buildOrderNotes = ({ notes, paidBy, paymentHistory }) => {
+    const summary = formatPaidByNotes(notes, paidBy).trim();
+    const history = Array.isArray(paymentHistory) && paymentHistory.length
+      ? `${PAYMENT_HISTORY_MARKER}\n${JSON.stringify(paymentHistory)}`
+      : '';
+    return [summary, history].filter(Boolean).join('\n\n') || null;
+  };
+
+  const derivePaymentStatus = (totalAmount, paidAmount, fallback = 'unpaid') => {
+    const total = Math.max(0, Number(totalAmount || 0));
+    const paid = Math.max(0, Number(paidAmount || 0));
+    if (total <= 0) return fallback;
+    if (paid >= total) return 'paid';
+    if (paid > 0) return 'partial';
+    return 'unpaid';
+  };
+
+  const syncOrderIntoList = (nextOrder) => {
+    setOrders((prev) => {
+      const nextOrders = prev.map((order) => (order.id === nextOrder.id ? { ...order, ...nextOrder } : order));
+      const cached = getCachedData(ordersCacheKey);
+      setCachedData(ordersCacheKey, {
+        ...(cached || {}),
+        orders: nextOrders
+      });
+      return nextOrders;
+    });
+  };
+
+  const removeOrderFromList = (orderId) => {
+    setOrders((prev) => {
+      const nextOrders = prev.filter((order) => order.id !== orderId);
+      const cached = getCachedData(ordersCacheKey);
+      setCachedData(ordersCacheKey, {
+        ...(cached || {}),
+        orders: nextOrders
+      });
+      return nextOrders;
+    });
+  };
+
+  const closeDetailsModal = () => {
+    setShowDetails(false);
+    setShowPaymentEditor(false);
+    setSelectedPaymentEntry(null);
+    setExpandedProofImage(null);
+  };
+
+  const deleteOrder = async (order) => {
+    const confirmed = window.confirm(`Delete order ${order.order_number}?`);
+    if (!confirmed) return;
+
+    try {
+      const res = await apiJson(`/api/stock/orders/${order.id}`, {
+        method: 'DELETE',
+        token: accessToken,
+        queueOffline: true
+      });
+
+      removeOrderFromList(order.id);
+      if (activeOrder?.id === order.id) closeDetailsModal();
+
+      if (res?.queued) {
+        toast.success('Order delete queued offline');
+      } else {
+        toast.success('Order deleted');
+      }
+    } catch (err) {
+      toast.error('Failed to delete order: ' + err.message);
+    }
+  };
+
+  const openDetailsModal = async (order) => {
+    setShowDetails(true);
+    setDetailsLoading(true);
+    try {
+      const res = await apiJson(`/api/stock/orders/${order.id}`, { token: accessToken });
+      const fullOrder = res.order;
+      setActiveOrder(fullOrder);
+      setDeliverItems(
+        (fullOrder.items || []).map((it) => ({
+          id: it.id,
+          cylinder_size: it.cylinder_size,
+          gas_type: it.gas_type,
+          ordered: it.quantity_ordered,
+          received_so_far: Number(it.quantity_received || 0),
+          remaining: Math.max(0, Number(it.quantity_ordered || 0) - Number(it.quantity_received || 0)),
+          receive_now: 0,
+          condition: 'good'
+        }))
+      );
+      setPaymentForm({
+        payment_amount: '',
+        payment_method: '',
+        paid_by: '',
+        invoice_number: '',
+        invoice_url: '',
+        notes: ''
+      });
+    } catch (err) {
+      toast.error('Failed to load order details');
+      setShowDetails(false);
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const handleProofUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please upload an image file');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('Please upload an image under 2 MB');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPaymentForm((prev) => ({ ...prev, invoice_url: String(reader.result || '') }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const savePaymentDetails = async (e) => {
+    e.preventDefault();
+    if (!activeOrder) return;
+    try {
+      const paymentAmount = Math.max(0, Number(paymentForm.payment_amount || 0));
+      if (paymentAmount <= 0) {
+        toast.error('Enter a payment amount greater than 0');
+        return;
+      }
+      const previousPaidAmount = Number(activeOrder.paid_amount || 0);
+      const nextPaidAmount = previousPaidAmount + paymentAmount;
+      const previousHistory = extractPaymentHistory(activeOrder.notes);
+      const nextHistory = [
+        ...previousHistory,
+        {
+          id: `pay-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          created_at: new Date().toISOString(),
+          amount_added: paymentAmount,
+          total_paid: nextPaidAmount,
+          payment_method: paymentForm.payment_method.trim() || '',
+          paid_by: paymentForm.paid_by.trim() || '',
+          invoice_number: paymentForm.invoice_number.trim() || '',
+          invoice_url: paymentForm.invoice_url || '',
+          notes: paymentForm.notes.trim() || ''
+        }
+      ];
+      const nextNotes = buildOrderNotes({
+        notes: paymentForm.notes,
+        paidBy: paymentForm.paid_by,
+        paymentHistory: nextHistory
+      });
+      const optimisticOrder = {
+        ...activeOrder,
+        paid_amount: nextPaidAmount,
+        payment_method: paymentForm.payment_method.trim() || null,
+        invoice_number: paymentForm.invoice_number.trim() || null,
+        invoice_url: paymentForm.invoice_url || null,
+        notes: nextNotes,
+        payment_status: derivePaymentStatus(activeOrder.total_amount, nextPaidAmount, activeOrder.payment_status || 'unpaid')
+      };
+
+      const res = await apiJson(`/api/stock/orders/${activeOrder.id}`, {
+        method: 'PATCH',
+        token: accessToken,
+        queueOffline: true,
+        body: {
+          paid_amount: nextPaidAmount,
+          payment_method: paymentForm.payment_method.trim() || null,
+          invoice_number: paymentForm.invoice_number.trim() || null,
+          invoice_url: paymentForm.invoice_url || null,
+          notes: nextNotes
+        }
+      });
+
+      let committedOrder = optimisticOrder;
+      if (res?.queued) {
+        toast.success('Payment update queued offline');
+      } else {
+        const refreshed = res?.order || (await apiJson(`/api/stock/orders/${activeOrder.id}`, { token: accessToken })).order;
+        committedOrder = {
+          ...refreshed,
+          payment_status: derivePaymentStatus(refreshed.total_amount, refreshed.paid_amount, refreshed.payment_status || 'unpaid')
+        };
+        toast.success('Payment details updated');
+      }
+
+      setActiveOrder(committedOrder);
+      syncOrderIntoList(committedOrder);
+      setShowPaymentEditor(false);
+      setPaymentForm({
+        payment_amount: '',
+        payment_method: '',
+        paid_by: '',
+        invoice_number: '',
+        invoice_url: '',
+        notes: ''
+      });
+    } catch (err) {
+      toast.error('Failed to update payment details: ' + err.message);
+    }
+  };
+
+  const getRemainingAmount = (order, paidOverride) => {
+    const total = Number(order?.total_amount || 0);
+    const paid = Math.max(0, Number(paidOverride ?? order?.paid_amount ?? 0));
+    return Math.max(0, total - paid);
+  };
+
+  const openCreatePaymentModal = () => {
+    setPaymentForm({
+      payment_amount: '',
+      payment_method: '',
+      paid_by: '',
+      invoice_number: activeOrder?.invoice_number || '',
+      invoice_url: '',
+      notes: ''
+    });
+    setShowPaymentEditor(true);
+  };
+
+  const openNewOrderModal = () => {
+    setOrderForm({
+      supplier_id: '',
+      order_date: new Date().toISOString().slice(0, 10),
+      expected_delivery_date: '',
+      invoice_number: buildGeneratedInvoiceNumber(),
+      notes: '',
+      items: [{ cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
+    });
+    setShowNewOrder(true);
+  };
+
+  const paymentHistory = useMemo(
+    () => (activeOrder ? extractPaymentHistory(activeOrder.notes).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) : []),
+    [activeOrder]
+  );
+
+  if (loading && !orders.length) {
+    return <StockTableShell rows={5} columns={8} header={true} topbar={true} />;
+  }
 
   return (
     <div className="space-y-4 relative">
@@ -183,7 +506,7 @@ export default function OrdersTab() {
           <button className="flex items-center justify-center gap-2 bg-surface/60 border border-border/50 px-4 py-2 rounded-xl text-sm font-medium hover:border-text/30 transition w-full md:w-auto">
             <Filter size={16} /> Filters
           </button>
-          <button onClick={() => setShowNewOrder(true)} className="flex items-center justify-center gap-2 bg-accent hover:bg-accent/90 text-white px-4 py-2 rounded-xl text-sm font-semibold transition shadow-lg shadow-accent/20 w-full md:w-auto">
+          <button onClick={openNewOrderModal} className="flex items-center justify-center gap-2 bg-accent hover:bg-accent/90 text-white px-4 py-2 rounded-xl text-sm font-semibold transition shadow-lg shadow-accent/20 w-full md:w-auto">
             <Plus size={16} /> New Order
           </button>
         </div>
@@ -205,13 +528,7 @@ export default function OrdersTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {loading ? (
-                Array.from({ length: 5 }).map((_, i) => (
-                  <tr key={i}>
-                    <td colSpan="8" className="px-4 py-3"><Skeleton height={20} baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" /></td>
-                  </tr>
-                ))
-              ) : orders.filter(o => o.order_number.toLowerCase().includes(search.toLowerCase())).length > 0 ? (
+              {orders.filter(o => o.order_number.toLowerCase().includes(search.toLowerCase())).length > 0 ? (
                 orders.filter(o => o.order_number.toLowerCase().includes(search.toLowerCase())).map((order) => (
                   <tr key={order.id} className="hover:bg-accent/5 transition group">
                     <td className="px-4 py-3 font-medium text-text">{order.order_number}</td>
@@ -226,14 +543,19 @@ export default function OrdersTab() {
                     <td className="px-4 py-3"><PaymentPill status={order.payment_status} /></td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2 opacity-100 transition">
-                        <button className="p-1.5 rounded-lg bg-surface hover:bg-accent/20 text-muted hover:text-accent transition tooltip" title="View Details">
+                        <button type="button" onClick={() => openDetailsModal(order)} className="p-1.5 rounded-lg bg-surface hover:bg-accent/20 text-muted hover:text-accent transition tooltip" title="Order Actions">
                           <Eye size={16} />
                         </button>
-                        {order.status !== 'delivered' && (
-                          <button onClick={() => openDeliverModal(order)} className="p-1.5 rounded-lg bg-success/10 hover:bg-success/30 text-success transition tooltip" title="Mark Delivered">
-                            <CheckCircle size={16} />
+                        {!['delivered', 'partial'].includes(order.status) ? (
+                          <button
+                            type="button"
+                            onClick={() => deleteOrder(order)}
+                            className="p-1.5 rounded-lg bg-danger/10 hover:bg-danger/20 text-danger transition tooltip"
+                            title="Delete Order"
+                          >
+                            <Trash2 size={16} />
                           </button>
-                        )}
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -251,16 +573,20 @@ export default function OrdersTab() {
       {/* New Order Modal */}
       <AnimatePresence>
         {showNewOrder && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/80 p-4 pb-6 pt-24 backdrop-blur-sm"
+            onClick={() => setShowNewOrder(false)}
+          >
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               className="w-full max-w-3xl rounded-2xl border border-border/50 bg-surface shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border/50 p-4">
                 <h2 className="text-lg font-bold text-text">Create New Order</h2>
-                <button onClick={() => setShowNewOrder(false)} className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"><X size={20}/></button>
+                <button type="button" onClick={() => setShowNewOrder(false)} className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"><X size={20}/></button>
               </div>
               <div className="p-4 overflow-y-auto custom-scrollbar flex-1">
                 <form id="newOrderForm" onSubmit={submitNewOrder} className="space-y-6">
@@ -361,80 +687,480 @@ export default function OrdersTab() {
         )}
       </AnimatePresence>
 
-      {/* Mark Delivered Modal */}
       <AnimatePresence>
-        {showDeliver && activeOrder && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+        {showDetails && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/80 p-4 pb-6 pt-24 backdrop-blur-sm"
+            onClick={closeDetailsModal}
+          >
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-2xl rounded-2xl border border-border/50 bg-surface shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+              className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border/60 bg-surface/95 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border/50 p-4">
                 <div>
-                  <h2 className="text-lg font-bold text-text">Receive Delivery</h2>
-                  <p className="text-xs text-muted">Order: {activeOrder.order_number}</p>
+                  <h2 className="text-lg font-bold text-text">Order Details</h2>
+                  <p className="text-xs text-muted">{activeOrder?.order_number || 'Loading order...'}</p>
                 </div>
-                <button onClick={() => setShowDeliver(false)} className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"><X size={20}/></button>
+                <button
+                  type="button"
+                  onClick={closeDetailsModal}
+                  className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"
+                >
+                  <X size={20} />
+                </button>
               </div>
               <div className="p-4 overflow-y-auto custom-scrollbar flex-1">
-                <form id="deliverForm" onSubmit={submitDeliver} className="space-y-4">
-                  <div className="rounded-xl border border-border/50 overflow-hidden bg-background">
+                {detailsLoading || !activeOrder ? (
+                  <div className="text-sm text-muted">Loading details...</div>
+                ) : (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                      <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                        <div className="text-xs text-muted">Supplier</div>
+                        <div className="mt-1 text-sm font-semibold">{activeOrder.supplier?.supplier_name || 'Unknown'}</div>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                        <div className="text-xs text-muted">Order Total</div>
+                        <div className="mt-1 text-sm font-semibold">{formatCurrency(activeOrder.total_amount)}</div>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                        <div className="text-xs text-muted">Paid Amount</div>
+                        <div className="mt-1 text-sm font-semibold">{formatCurrency(activeOrder.paid_amount || 0)}</div>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                        <div className="text-xs text-muted">Remaining Amount</div>
+                        <div className="mt-1 text-sm font-semibold text-warning">{formatCurrency(getRemainingAmount(activeOrder))}</div>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                        <div className="text-xs text-muted">Payment Status</div>
+                        <div className="mt-1"><PaymentPill status={activeOrder.payment_status} /></div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-border/50 overflow-hidden bg-background/70">
                       <table className="w-full text-left text-sm">
                         <thead className="bg-surface/50 text-xs text-muted border-b border-border/50">
                           <tr>
-                            <th className="px-3 py-2 font-medium">Item</th>
-                            <th className="px-3 py-2 font-medium w-24 text-center">Ordered</th>
-                            <th className="px-3 py-2 font-medium w-32">Receiving Qty</th>
-                            <th className="px-3 py-2 font-medium w-32">Condition</th>
+                            <th className="px-3 py-2 font-medium">Cylinder Size</th>
+                            <th className="px-3 py-2 font-medium">Gas</th>
+                            <th className="px-3 py-2 font-medium">Ordered</th>
+                            <th className="px-3 py-2 font-medium">Received</th>
+                            <th className="px-3 py-2 font-medium">Unit Price</th>
+                            <th className="px-3 py-2 font-medium">Line Total</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border/30">
-                          {deliverItems.map((item, idx) => (
-                            <tr key={idx}>
-                              <td className="px-3 py-3">
-                                <div className="font-semibold text-text">{item.cylinder_size}</div>
-                                <div className="text-[10px] text-accent font-bold uppercase">{item.gas_type}</div>
-                              </td>
-                              <td className="px-3 py-3 text-center text-muted font-medium">
-                                {item.ordered}
-                              </td>
-                              <td className="px-3 py-3">
-                                <input type="number" min="0" max={item.ordered} value={item.quantity_received} onChange={e => {
-                                  const v = [...deliverItems];
-                                  v[idx].quantity_received = e.target.value;
-                                  setDeliverItems(v);
-                                }} className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-sm text-text outline-none text-center" />
-                              </td>
-                              <td className="px-3 py-3">
-                                <select value={item.condition} onChange={e => {
-                                  const v = [...deliverItems];
-                                  v[idx].condition = e.target.value;
-                                  setDeliverItems(v);
-                                }} className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-sm text-text outline-none">
-                                  <option value="good">Good</option>
-                                  <option value="damaged">Damaged</option>
-                                  <option value="returned">Returned</option>
-                                </select>
-                              </td>
+                          {(activeOrder.items || []).map((item) => (
+                            <tr key={item.id}>
+                              <td className="px-3 py-3 font-medium">{item.cylinder_size}</td>
+                              <td className="px-3 py-3 uppercase text-xs text-muted">{item.gas_type}</td>
+                              <td className="px-3 py-3">{item.quantity_ordered}</td>
+                              <td className="px-3 py-3">{item.quantity_received || 0}</td>
+                              <td className="px-3 py-3">{formatCurrency(item.unit_price)}</td>
+                              <td className="px-3 py-3 font-semibold">{formatCurrency((item.quantity_ordered || 0) * (item.unit_price || 0))}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
+                    </div>
+
+                    {activeOrder.status !== 'delivered' ? (
+                      <form onSubmit={submitDeliver} className="space-y-4 rounded-2xl border border-border/50 bg-card/30 p-4">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle size={18} className="text-success" />
+                          <h3 className="text-sm font-semibold">Delivery Update</h3>
+                        </div>
+                        <div className="rounded-xl border border-border/50 overflow-hidden bg-background/70">
+                          <table className="w-full text-left text-sm">
+                            <thead className="border-b border-border/50 bg-surface/50 text-xs text-muted">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">Item</th>
+                                <th className="px-3 py-2 text-center font-medium">Ordered</th>
+                                <th className="px-3 py-2 text-center font-medium">Remaining</th>
+                                <th className="px-3 py-2 font-medium">Receive Now</th>
+                                <th className="px-3 py-2 font-medium">Condition</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border/30">
+                              {deliverItems.map((item, idx) => {
+                                return (
+                                  <tr key={item.id || idx}>
+                                    <td className="px-3 py-3">
+                                      <div className="font-semibold text-text">{item.cylinder_size}</div>
+                                      <div className="text-[10px] font-bold uppercase text-accent">{item.gas_type}</div>
+                                    </td>
+                                    <td className="px-3 py-3 text-center text-text">{item.ordered}</td>
+                                    <td className="px-3 py-3 text-center text-warning">{Math.max(0, Number(item.remaining || 0))}</td>
+                                    <td className="px-3 py-3">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={item.remaining}
+                                        value={item.receive_now}
+                                        onChange={(e) => {
+                                          const value = Math.max(0, Math.min(Number(e.target.value || 0), Number(item.remaining || 0)));
+                                          setDeliverItems((prev) => prev.map((row, rowIndex) => (rowIndex === idx ? { ...row, receive_now: value } : row)));
+                                        }}
+                                        className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-sm text-text outline-none text-center"
+                                      />
+                                    </td>
+                                    <td className="px-3 py-3">
+                                      <select
+                                        value={item.condition}
+                                        onChange={(e) => {
+                                          setDeliverItems((prev) => prev.map((row, rowIndex) => (rowIndex === idx ? { ...row, condition: e.target.value } : row)));
+                                        }}
+                                        className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-sm text-text outline-none"
+                                      >
+                                        <option value="good">Good</option>
+                                        <option value="damaged">Damaged</option>
+                                        <option value="returned">Returned</option>
+                                      </select>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="rounded-xl border border-warning/20 bg-warning/10 p-3 text-xs text-warning">
+                          Receive the pending quantity from here. This updates inventory and the order delivery status automatically.
+                        </div>
+                        <div className="flex justify-end">
+                          <button type="submit" className="rounded-xl bg-success px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-success/20 transition hover:bg-success/90">
+                            Confirm Delivery
+                          </button>
+                        </div>
+                      </form>
+                    ) : null}
+
+                    <div className="space-y-4 rounded-2xl border border-border/50 bg-card/30 p-4">
+                      <div className="flex items-center gap-2">
+                        <ReceiptIndianRupee size={18} className="text-accent" />
+                        <h3 className="text-sm font-semibold">Payment Details</h3>
+                      </div>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+                        <div className="rounded-xl border border-border/50 bg-surface/60 p-3">
+                          <div className="text-xs text-muted">Order Total</div>
+                          <div className="mt-1 text-base font-semibold text-text">{formatCurrency(activeOrder.total_amount || 0)}</div>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-surface/60 p-3">
+                          <div className="text-xs text-muted">Total Paid</div>
+                          <div className="mt-1 text-base font-semibold text-text">{formatCurrency(activeOrder.paid_amount || 0)}</div>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-surface/60 p-3">
+                          <div className="text-xs text-muted">Remaining Amount</div>
+                          <div className="mt-1 text-base font-semibold text-warning">{formatCurrency(getRemainingAmount(activeOrder))}</div>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-surface/60 p-3">
+                          <div className="text-xs text-muted">Payment Status</div>
+                          <div className="mt-2"><PaymentPill status={activeOrder.payment_status} /></div>
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-text">Previous Payments</div>
+                            <div className="text-xs text-muted">Minimal payment list with full details on demand.</div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="text-xs text-muted">{paymentHistory.length} record(s)</div>
+                            <button
+                              type="button"
+                              onClick={openCreatePaymentModal}
+                              disabled={getRemainingAmount(activeOrder) <= 0}
+                              className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Plus size={14} />
+                              Create Payment
+                            </button>
+                          </div>
+                        </div>
+                        <div className="overflow-hidden rounded-xl border border-border/50 bg-background/70">
+                          <table className="w-full text-left text-sm">
+                            <thead className="bg-surface/50 text-xs text-muted border-b border-border/50">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">Date</th>
+                                <th className="px-3 py-2 font-medium">Added</th>
+                                <th className="px-3 py-2 font-medium">Total Paid</th>
+                                <th className="px-3 py-2 font-medium">Method</th>
+                                <th className="px-3 py-2 font-medium">Paid By</th>
+                                <th className="px-3 py-2 text-right font-medium">View</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border/30">
+                              {paymentHistory.length ? (
+                                paymentHistory.map((entry) => (
+                                  <tr key={entry.id} className="hover:bg-accent/5 transition">
+                                    <td className="px-3 py-3 text-muted">{formatDateTime(entry.created_at).split(',')[0]}</td>
+                                    <td className="px-3 py-3 font-medium text-text">{formatCurrency(entry.amount_added || 0)}</td>
+                                    <td className="px-3 py-3 font-medium text-text">{formatCurrency(entry.total_paid || 0)}</td>
+                                    <td className="px-3 py-3 text-muted">{entry.payment_method || '-'}</td>
+                                    <td className="px-3 py-3 text-muted">{entry.paid_by || '-'}</td>
+                                    <td className="px-3 py-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedPaymentEntry(entry)}
+                                        className="rounded-lg border border-border/50 bg-surface px-3 py-1.5 text-xs font-semibold text-text transition hover:border-accent hover:text-accent"
+                                      >
+                                        View
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))
+                              ) : (
+                                <tr>
+                                  <td colSpan="6" className="px-3 py-5 text-center text-xs text-muted">
+                                    No payment entries saved yet.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="p-3 bg-warning/10 text-warning border border-warning/20 rounded-lg text-xs">
-                    Receiving quantities will automatically update live inventory bucketing depending on the condition.
-                  </div>
-                </form>
-              </div>
-              <div className="border-t border-border/50 p-4 flex justify-end gap-3 bg-surface/50">
-                <button type="button" onClick={() => setShowDeliver(false)} className="rounded-xl px-4 py-2 text-sm font-semibold text-muted hover:bg-card hover:text-text transition">Cancel</button>
-                <button type="submit" form="deliverForm" className="rounded-xl bg-success px-6 py-2 text-sm font-semibold text-white shadow-lg shadow-success/20 transition hover:bg-success/90">Confirm Delivery</button>
+                )}
               </div>
             </motion.div>
           </div>
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showPaymentEditor && activeOrder ? (
+          <div
+            className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-background/80 p-4 pb-6 pt-24 backdrop-blur-sm"
+            onClick={() => setShowPaymentEditor(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border/60 bg-surface/95 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-border/50 p-4">
+                <div>
+                  <h2 className="text-base font-bold text-text">Create Payment</h2>
+                  <p className="text-xs text-muted">
+                    Remaining amount: {formatCurrency(getRemainingAmount(activeOrder))}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentEditor(false)}
+                  className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <form onSubmit={savePaymentDetails} className="space-y-4 p-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <label className="text-xs text-muted">
+                    Payment Amount
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={paymentForm.payment_amount}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, payment_amount: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                      placeholder="Enter payment amount"
+                    />
+                  </label>
+                  <label className="text-xs text-muted">
+                    Paid By
+                    <input
+                      value={paymentForm.paid_by}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, paid_by: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                      placeholder="Accounts team / finance officer"
+                    />
+                  </label>
+                  <label className="text-xs text-muted">
+                    Payment Method
+                    <input
+                      value={paymentForm.payment_method}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, payment_method: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                      placeholder="UPI / bank transfer / cash"
+                    />
+                  </label>
+                  <label className="text-xs text-muted">
+                    Bill / Invoice Number
+                    <input
+                      value={paymentForm.invoice_number}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, invoice_number: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                    />
+                  </label>
+                  <label className="text-xs text-muted md:col-span-2">
+                    Upload Bill Proof
+                    <div className="mt-1 flex flex-wrap items-center gap-3">
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text transition hover:border-accent">
+                        <Upload size={16} />
+                        <span>Choose image</span>
+                        <input type="file" accept="image/*" onChange={handleProofUpload} className="hidden" />
+                      </label>
+                      {paymentForm.invoice_url ? <span className="text-xs text-success">Proof attached</span> : <span className="text-xs text-muted">No image uploaded</span>}
+                    </div>
+                    {paymentForm.invoice_url ? (
+                      <div className="mt-3">
+                        <img src={paymentForm.invoice_url} alt="Bill proof" className="max-h-44 rounded-xl border border-border/50 object-contain" />
+                      </div>
+                    ) : null}
+                  </label>
+                  <label className="text-xs text-muted md:col-span-2">
+                    Notes
+                    <textarea
+                      rows={3}
+                      value={paymentForm.notes}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, notes: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition resize-none"
+                    />
+                  </label>
+                </div>
+                <div className="rounded-xl border border-border/40 bg-surface/50 p-3 text-xs text-muted">
+                  Payment status is updated automatically from order total vs total paid amount.
+                </div>
+                <div className="flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowPaymentEditor(false)}
+                    className="rounded-xl px-4 py-2 text-sm font-semibold text-muted hover:bg-card hover:text-text transition"
+                  >
+                    Cancel
+                  </button>
+                  <button type="submit" className="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90">
+                    Save Payment
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {selectedPaymentEntry ? (
+          <div
+            className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-background/80 p-4 pb-6 pt-24 backdrop-blur-sm"
+            onClick={() => setSelectedPaymentEntry(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-2xl rounded-2xl border border-border/60 bg-surface/95 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-border/50 p-4">
+                <div>
+                  <h2 className="text-base font-bold text-text">Payment Entry Details</h2>
+                  <p className="text-xs text-muted">{formatDateTime(selectedPaymentEntry.created_at)}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPaymentEntry(null)}
+                  className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="space-y-4 p-4">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                      <div className="text-xs text-muted">Amount Added</div>
+                      <div className="mt-1 text-sm font-semibold text-text">{formatCurrency(selectedPaymentEntry.amount_added || 0)}</div>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                      <div className="text-xs text-muted">Total Paid After Update</div>
+                      <div className="mt-1 text-sm font-semibold text-text">{formatCurrency(selectedPaymentEntry.total_paid || 0)}</div>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                      <div className="text-xs text-muted">Payment Method</div>
+                      <div className="mt-1 text-sm font-semibold text-text">{selectedPaymentEntry.payment_method || '-'}</div>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-card/20 p-3">
+                      <div className="text-xs text-muted">Paid By</div>
+                      <div className="mt-1 text-sm font-semibold text-text">{selectedPaymentEntry.paid_by || '-'}</div>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-card/20 p-3 md:col-span-2">
+                      <div className="text-xs text-muted">Invoice Number</div>
+                      <div className="mt-1 text-sm font-semibold text-text">{selectedPaymentEntry.invoice_number || '-'}</div>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-card/20 p-3 md:col-span-2">
+                      <div className="text-xs text-muted">Notes</div>
+                      <div className="mt-1 whitespace-pre-wrap text-sm text-text">{selectedPaymentEntry.notes || 'No notes added'}</div>
+                    </div>
+                  </div>
+                  <div className="flex h-full flex-col rounded-xl border border-border/50 bg-card/30 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs text-muted">Bill Proof</div>
+                      {selectedPaymentEntry.invoice_url ? (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedProofImage(selectedPaymentEntry.invoice_url)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border/50 bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-text transition hover:border-accent hover:text-accent"
+                        >
+                          <Expand size={13} />
+                          Expand
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="mt-3 flex h-full min-h-[24rem] items-center justify-center overflow-hidden rounded-xl border border-border/50 bg-background/70 p-3">
+                      {selectedPaymentEntry.invoice_url ? (
+                        <img
+                          src={selectedPaymentEntry.invoice_url}
+                          alt="Payment proof"
+                          className="h-full max-h-[26rem] w-full rounded-lg object-contain"
+                        />
+                      ) : (
+                        <div className="px-4 text-center text-sm text-muted">No bill proof uploaded</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {expandedProofImage ? (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-background/95 p-4 backdrop-blur-md"
+            onClick={() => setExpandedProofImage(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              className="relative flex h-full max-h-[92vh] w-full max-w-6xl items-center justify-center rounded-2xl border border-border/60 bg-surface/95 p-4 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={() => setExpandedProofImage(null)}
+                className="absolute right-4 top-4 rounded-lg border border-border/50 bg-surface px-3 py-2 text-sm font-semibold text-text transition hover:border-accent hover:text-accent"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <X size={16} />
+                  Close
+                </span>
+              </button>
+              <img src={expandedProofImage} alt="Expanded bill proof" className="h-full max-h-full w-full rounded-xl object-contain" />
+            </motion.div>
+          </div>
+        ) : null}
       </AnimatePresence>
     </div>
   );

@@ -4,9 +4,10 @@ import { Save, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useCylinders } from '../hooks/useCylinders.js';
 import { apiJson, formatDateTime } from '../lib/api.js';
+import { loadHospitalProfile, saveHospitalProfile } from '../lib/hospitalProfile.js';
 
 const tabs = [
-  { key: 'profile', label: 'Profile' },
+  { key: 'profile', label: 'Hospital Details' },
   { key: 'cylinders', label: 'Cylinders' },
   { key: 'thresholds', label: 'Alert Thresholds' },
   { key: 'integrations', label: 'Integrations' },
@@ -39,11 +40,18 @@ export default function Settings() {
   const [aiKey, setAiKey] = useState(ai.key);
   const [aiModel, setAiModel] = useState(ai.model);
   const [aiTemp, setAiTemp] = useState(ai.temp);
+  const [hospitalProfile, setHospitalProfile] = useState(() => loadHospitalProfile());
 
   async function saveCylinder(id, patch) {
     try {
-      await apiJson(`/api/cylinders/${id}`, { token: accessToken, method: 'PATCH', body: patch });
+      const res = await apiJson(`/api/cylinders/${id}`, {
+        token: accessToken,
+        method: 'PATCH',
+        body: patch,
+        queueOffline: true
+      });
       toast.success('Saved');
+      if (res?.queued) toast.success('Saved offline. It will sync automatically when internet is back.');
       refresh();
     } catch (e) {
       toast.error(e.message);
@@ -100,8 +108,13 @@ export default function Settings() {
   async function deleteCylinder(id) {
     if (!confirm('Delete this cylinder?')) return;
     try {
-      await apiJson(`/api/cylinders/${id}`, { token: accessToken, method: 'DELETE' });
+      const res = await apiJson(`/api/cylinders/${id}`, {
+        token: accessToken,
+        method: 'DELETE',
+        queueOffline: true
+      });
       toast.success('Deleted');
+      if (res?.queued) toast.success('Delete queued offline. It will sync automatically when internet is back.');
       refresh();
     } catch (e) {
       toast.error(e.message);
@@ -110,8 +123,14 @@ export default function Settings() {
 
   async function saveThresholds() {
     try {
-      await apiJson('/api/settings/thresholds', { token: accessToken, method: 'PATCH', body: thresholds });
+      const res = await apiJson('/api/settings/thresholds', {
+        token: accessToken,
+        method: 'PATCH',
+        body: thresholds,
+        queueOffline: true
+      });
       toast.success('Thresholds saved');
+      if (res?.queued) toast.success('Threshold update queued offline. It will sync automatically when internet is back.');
     } catch (e) {
       toast.error(e.message);
     }
@@ -122,6 +141,11 @@ export default function Settings() {
     localStorage.setItem('oxytrace-gemini-model', aiModel);
     localStorage.setItem('oxytrace-gemini-temp', String(aiTemp));
     toast.success('AI settings saved (local)');
+  }
+
+  function saveHospitalDetails() {
+    saveHospitalProfile(hospitalProfile);
+    toast.success('Hospital details saved');
   }
 
   async function testAI() {
@@ -160,17 +184,99 @@ export default function Settings() {
 
       {tab === 'profile' ? (
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
-          <div className="flex items-center gap-3">
-            <img
-              src={user?.user_metadata?.avatar_url}
-              alt="avatar"
-              className="h-12 w-12 rounded-full"
-              referrerPolicy="no-referrer"
-            />
-            <div>
-              <div className="text-lg font-semibold">{user?.user_metadata?.full_name || 'User'}</div>
-              <div className="text-sm text-muted">{user?.email}</div>
-            </div>
+          <div className="flex flex-col gap-1">
+            <div className="text-lg font-semibold">Hospital details</div>
+            <div className="text-sm text-muted">These details appear in OxyTrace report headers and identify the facility receiving the report.</div>
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <label className="text-xs text-muted md:col-span-2">
+              Hospital name
+              <input
+                value={hospitalProfile.hospital_name}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, hospital_name: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted">
+              Contact person
+              <input
+                value={hospitalProfile.contact_name}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, contact_name: e.target.value }))}
+                placeholder={user?.user_metadata?.full_name || ''}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted">
+              Email
+              <input
+                value={hospitalProfile.email}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, email: e.target.value }))}
+                placeholder={user?.email || ''}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                type="email"
+              />
+            </label>
+            <label className="text-xs text-muted">
+              Phone
+              <input
+                value={hospitalProfile.phone}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, phone: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Address line 1
+              <input
+                value={hospitalProfile.address_line_1}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, address_line_1: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Address line 2
+              <input
+                value={hospitalProfile.address_line_2}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, address_line_2: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted">
+              City
+              <input
+                value={hospitalProfile.city}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, city: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted">
+              State
+              <input
+                value={hospitalProfile.state}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, state: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted">
+              Postal code
+              <input
+                value={hospitalProfile.postal_code}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, postal_code: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-muted">
+              Country
+              <input
+                value={hospitalProfile.country}
+                onChange={(e) => setHospitalProfile((prev) => ({ ...prev, country: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex items-center gap-2">
+            <button onClick={saveHospitalDetails} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">
+              Save hospital details
+            </button>
           </div>
         </div>
       ) : null}

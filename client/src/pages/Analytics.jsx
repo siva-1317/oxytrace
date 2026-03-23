@@ -21,8 +21,10 @@ import {
   YAxis
 } from 'recharts';
 import { useAuth } from '../context/AuthContext.jsx';
-import { apiJson } from '../lib/api.js';
-import Spinner from '../components/Spinner.jsx';
+import { apiJson, getCachedData } from '../lib/api.js';
+import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
+import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
+import { downloadAnalyticsReportPdf } from '../lib/reportPrint.js';
 
 function TooltipBox({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -56,7 +58,8 @@ export default function Analytics() {
     return d.toISOString().slice(0, 10);
   });
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
-  const [data, setData] = useState(null);
+  const cacheKey = `/api/analytics/consumption?from=${from}&to=${to}`;
+  const [data, setData] = useState(() => getCachedData(cacheKey));
   const [aiReport, setAiReport] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
 
@@ -67,7 +70,10 @@ export default function Analytics() {
     let cancelled = false;
     async function load() {
       try {
-        const d = await apiJson(`/api/analytics/consumption?from=${from}&to=${to}`, { token: accessToken });
+        const d = await apiJson(`/api/analytics/consumption?from=${from}&to=${to}`, {
+          token: accessToken,
+          cacheKey: `/api/analytics/consumption?from=${from}&to=${to}`
+        });
         if (!cancelled) setData(d);
       } catch (e) {
         toast.error(e.message);
@@ -118,11 +124,7 @@ export default function Analytics() {
   };
 
   if (!data) {
-    return (
-      <div className="grid place-items-center rounded-2xl border border-border/50 bg-surface/70 p-10 shadow-sm backdrop-blur">
-        <Spinner label="Loading analytics…" />
-      </div>
-    );
+    return <DashboardPageLoader variant="analytics" />;
   }
 
   const heat = data?.heatmap || { days: [], hours: [], grid: [] };
@@ -140,6 +142,7 @@ export default function Analytics() {
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="ml-2 rounded-xl border border-border/50 bg-background px-3 py-2 text-sm shadow-sm focus:border-accent transition outline-none" />
         </label>
         <div className="flex-1" />
+        <ReportDownloadButton onGenerate={() => downloadAnalyticsReportPdf({ from, to, data, aiReport })} />
         <button onClick={exportCsv} className="rounded-xl border border-border/50 bg-surface px-4 py-2 text-sm font-medium transition hover:border-accent hover:text-accent shadow-sm">
           Export CSV
         </button>

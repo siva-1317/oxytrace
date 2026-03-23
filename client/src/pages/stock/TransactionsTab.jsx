@@ -1,20 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { apiJson, formatDateTime } from '../../lib/api';
+import { apiJson, formatDateTime, getCachedData } from '../../lib/api';
 import { Search, Filter, History, Download, ArrowUpRight, ArrowDownLeft, RefreshCcw, AlertOctagon, Settings2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import Skeleton from 'react-loading-skeleton';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { StockTransactionsShell } from '../../components/DashboardPageLoader.jsx';
 
 export default function TransactionsTab() {
   const { accessToken } = useAuth();
-  const [txs, setTxs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = '/api/stock/transactions?page=1&pageSize=100';
+  const [txs, setTxs] = useState(() => getCachedData(cacheKey)?.transactions || []);
+  const [loading, setLoading] = useState(() => !getCachedData(cacheKey));
 
   const fetchTransactions = async () => {
-    setLoading(true);
+    if (!getCachedData(cacheKey)) setLoading(true);
     try {
-      const res = await apiJson('/api/stock/transactions?page=1&pageSize=100', { token: accessToken });
+      const res = await apiJson('/api/stock/transactions?page=1&pageSize=100', { token: accessToken, cacheKey });
       setTxs(res.transactions || []);
     } catch (err) {
       toast.error('Failed to load transactions');
@@ -55,6 +56,10 @@ export default function TransactionsTab() {
       default: return 'bg-muted/10 text-muted border-border/50';
     }
   };
+
+  if (loading && !txs.length) {
+    return <StockTransactionsShell />;
+  }
 
   return (
     <div className="space-y-6">
@@ -107,13 +112,7 @@ export default function TransactionsTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {loading ? (
-                Array.from({ length: 5 }).map((_, i) => (
-                  <tr key={i}>
-                    <td colSpan="6" className="px-5 py-4"><Skeleton height={20} baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" /></td>
-                  </tr>
-                ))
-              ) : txs.length > 0 ? (
+              {txs.length > 0 ? (
                 txs.map((tx) => (
                   <tr key={tx.id} className="hover:bg-accent/5 transition">
                     <td className="px-5 py-4">

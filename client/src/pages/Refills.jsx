@@ -3,8 +3,10 @@ import toast from 'react-hot-toast';
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useCylinders } from '../hooks/useCylinders.js';
-import { apiJson, formatDateTime } from '../lib/api.js';
-import Spinner from '../components/Spinner.jsx';
+import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
+import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
+import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
+import { downloadRefillsReportPdf } from '../lib/reportPrint.js';
 
 function TooltipBox({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -46,8 +48,9 @@ function Modal({ open, title, children, onClose }) {
 export default function Refills() {
   const { accessToken } = useAuth();
   const { cylinders } = useCylinders();
-  const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = '/api/refills';
+  const [history, setHistory] = useState(() => getCachedData(cacheKey)?.refills || []);
+  const [loading, setLoading] = useState(() => !getCachedData(cacheKey));
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ cylinder_id: '', new_weight_kg: '', refilled_by: '', notes: '' });
 
@@ -55,9 +58,9 @@ export default function Refills() {
     if (!accessToken) return;
     let cancelled = false;
     async function load() {
-      setLoading(true);
+      if (!getCachedData(cacheKey)) setLoading(true);
       try {
-        const data = await apiJson('/api/refills', { token: accessToken });
+        const data = await apiJson('/api/refills', { token: accessToken, cacheKey });
         if (!cancelled) setHistory(data.refills || []);
       } catch (e) {
         toast.error(e.message);
@@ -119,6 +122,7 @@ export default function Refills() {
       await apiJson('/api/refills', {
         token: accessToken,
         method: 'POST',
+        queueOffline: true,
         body: {
           cylinder_id: form.cylinder_id,
           previous_weight_kg: prevWeight,
@@ -130,7 +134,7 @@ export default function Refills() {
       toast.success('Refill logged');
       setOpen(false);
       setForm({ cylinder_id: '', new_weight_kg: '', refilled_by: '', notes: '' });
-      const data = await apiJson('/api/refills', { token: accessToken });
+      const data = await apiJson('/api/refills', { token: accessToken, cacheKey });
       setHistory(data.refills || []);
     } catch (e) {
       toast.error(e.message);
@@ -150,6 +154,10 @@ export default function Refills() {
     }
   }
 
+  if (loading) {
+    return <DashboardPageLoader variant="refills" />;
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between bg-surface/80 p-4 rounded-2xl border border-border/50 shadow-sm backdrop-blur">
@@ -158,6 +166,7 @@ export default function Refills() {
           <p className="text-xs text-muted mt-0.5">Track and analyze logged batch refills</p>
         </div>
         <div className="flex gap-2">
+          <ReportDownloadButton onGenerate={() => downloadRefillsReportPdf({ history, upcoming, stats, perCylinder })} />
           <button onClick={exportCsv} className="rounded-xl border border-border/50 bg-surface px-4 py-2 text-sm font-medium transition hover:border-accent hover:text-accent shadow-sm">
             Export CSV
           </button>

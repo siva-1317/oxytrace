@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { AlertTriangle, BellRing, ChevronDown, Clock3, MapPin } from 'lucide-react';
 import toast from 'react-hot-toast';
 import Skeleton from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
+import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { apiJson, formatDateTime } from '../lib/api.js';
+import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
+import { downloadAlertsReportPdf } from '../lib/reportPrint.js';
 
 const tabs = [
   { key: 'all', label: 'All' },
@@ -19,40 +22,65 @@ function severityPill(sev) {
   return 'bg-card/30 text-muted ring-1 ring-border/40';
 }
 
-function severityIsland(sev) {
-  if (sev === 'critical') return 'border-danger/35 bg-danger/6';
-  if (sev === 'warning') return 'border-warning/35 bg-warning/6';
-  return 'border-border/60 bg-surface/70';
+function severityCard(sev) {
+  if (sev === 'critical') return 'border-danger/30 bg-danger/5 shadow-danger/10';
+  if (sev === 'warning') return 'border-warning/30 bg-warning/5 shadow-warning/10';
+  return 'border-border/50 bg-surface/70 shadow-sm';
 }
 
 function AlertIsland({ alert, open, onToggle, onResolve }) {
   const cylinderName = alert.cylinder?.cylinder_name || alert.cylinder_name || alert.esp32_device_id;
   const ward = alert.cylinder?.ward || alert.ward;
+  const icon = alert.severity === 'critical' ? <AlertTriangle size={18} /> : <BellRing size={18} />;
 
   return (
     <motion.div layout className="w-full">
       <motion.button
+        type="button"
         layout
         onClick={onToggle}
-        className={`group w-full overflow-hidden rounded-full border px-4 py-3 text-left shadow-sm backdrop-blur transition hover:shadow-glow ${severityIsland(
+        className={`group w-full overflow-hidden rounded-2xl border p-4 text-left backdrop-blur transition hover:shadow-glow ${severityCard(
           alert.severity
         )}`}
       >
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${severityPill(alert.severity)}`}>
-                {alert.severity}
-              </span>
-              <div className="truncate text-sm font-semibold">{cylinderName}</div>
-              {ward ? <div className="hidden truncate text-xs text-muted sm:block">· {ward}</div> : null}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-xl border border-border/40 bg-card/30 p-2 text-muted">{icon}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium capitalize ${severityPill(alert.severity)}`}>
+                    {alert.severity}
+                  </span>
+                  <div className="truncate text-base font-semibold text-text">{cylinderName}</div>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted">
+                  <span className="inline-flex items-center gap-1">
+                    <BellRing size={13} />
+                    {alert.alert_type || 'Alert'}
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <Clock3 size={13} />
+                    {formatDateTime(alert.created_at)}
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <MapPin size={13} />
+                    {ward || 'Ward not assigned'}
+                  </span>
+                </div>
+              </div>
             </div>
-            <div className="mt-1 truncate text-xs text-muted">
-              <span className="font-medium text-text/80">{alert.alert_type}</span>
-              {alert.message ? <span className="text-muted"> — {alert.message}</span> : null}
+
+            <div className="mt-3 rounded-xl border border-border/40 bg-card/20 px-3 py-2 text-sm text-muted">
+              {alert.message || 'No additional message provided for this alert.'}
             </div>
           </div>
-          <div className="shrink-0 text-xs text-muted">{open ? 'Details' : formatDateTime(alert.created_at)}</div>
+
+          <div className="flex shrink-0 items-start">
+            <div className="rounded-full border border-border/40 bg-card/20 p-2 text-muted transition group-hover:text-text">
+              <ChevronDown size={16} className={`transition duration-200 ${open ? 'rotate-180' : ''}`} />
+            </div>
+          </div>
         </div>
 
         <AnimatePresence initial={false}>
@@ -63,31 +91,28 @@ function AlertIsland({ alert, open, onToggle, onResolve }) {
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
               transition={{ duration: 0.22 }}
-              className="mt-3"
+              className="mt-4"
             >
               <div className="rounded-2xl border border-border/50 bg-card/20 p-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div>
-                    <div className="text-[11px] text-muted">Time</div>
-                    <div className="mt-1 text-sm">{formatDateTime(alert.created_at)}</div>
+                  <div className="rounded-xl border border-border/40 bg-surface/60 p-3">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted">Time</div>
+                    <div className="mt-1 text-sm font-medium text-text">{formatDateTime(alert.created_at)}</div>
                   </div>
-                  <div>
-                    <div className="text-[11px] text-muted">Ward</div>
-                    <div className="mt-1 text-sm">{ward || '—'}</div>
+                  <div className="rounded-xl border border-border/40 bg-surface/60 p-3">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted">Ward</div>
+                    <div className="mt-1 text-sm font-medium text-text">{ward || '-'}</div>
                   </div>
-                  <div>
-                    <div className="text-[11px] text-muted">Severity</div>
-                    <div className="mt-1 text-sm">{alert.severity || '—'}</div>
+                  <div className="rounded-xl border border-border/40 bg-surface/60 p-3">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted">Severity</div>
+                    <div className="mt-1 text-sm font-medium capitalize text-text">{alert.severity || '-'}</div>
                   </div>
                 </div>
 
-                {alert.message ? (
-                  <div className="mt-3 text-sm text-muted">{alert.message}</div>
-                ) : null}
-
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-xs text-muted">Tap again to collapse</div>
+                  <div className="text-xs text-muted">Review the alert details and resolve it once the issue is handled.</div>
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -109,18 +134,23 @@ function AlertIsland({ alert, open, onToggle, onResolve }) {
 
 export default function Alerts() {
   const { accessToken } = useAuth();
-  const [alerts, setAlerts] = useState([]);
+  const cacheKey = '/api/alerts?status=active&limit=200';
+  const [alerts, setAlerts] = useState(() => getCachedData(cacheKey)?.alerts || []);
   const [tab, setTab] = useState('all');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !getCachedData(cacheKey));
   const [openId, setOpenId] = useState(null);
 
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
+
     async function load() {
-      setLoading(true);
+      if (!getCachedData(cacheKey)) setLoading(true);
       try {
-        const data = await apiJson('/api/alerts?status=active&limit=200', { token: accessToken });
+        const data = await apiJson('/api/alerts?status=active&limit=200', {
+          token: accessToken,
+          cacheKey
+        });
         if (!cancelled) setAlerts(data.alerts || []);
       } catch (e) {
         toast.error(e.message);
@@ -128,6 +158,7 @@ export default function Alerts() {
         if (!cancelled) setLoading(false);
       }
     }
+
     load();
     const t = setInterval(load, 20000);
     return () => {
@@ -145,20 +176,27 @@ export default function Alerts() {
     const total = alerts.length;
     const critical = alerts.filter((a) => a.severity === 'critical').length;
     const byWard = new Map();
+
     for (const a of alerts) {
       const w = a.cylinder?.ward || a.ward || 'Unknown';
       byWard.set(w, (byWard.get(w) || 0) + 1);
     }
-    const most = Array.from(byWard.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || '—';
+
+    const most = Array.from(byWard.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
     return { total, critical, most };
   }, [alerts]);
 
   async function resolveAlert(id) {
     try {
-      await apiJson(`/api/alerts/${id}/resolve`, { token: accessToken, method: 'PATCH' });
+      const res = await apiJson(`/api/alerts/${id}/resolve`, {
+        token: accessToken,
+        method: 'PATCH',
+        queueOffline: true
+      });
       toast.success('Alert resolved');
       setAlerts((prev) => prev.filter((a) => a.id !== id));
       if (openId === id) setOpenId(null);
+      if (res?.queued) toast.success('Stored offline. It will sync automatically when internet is back.');
     } catch (e) {
       toast.error(e.message);
     }
@@ -166,6 +204,14 @@ export default function Alerts() {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-text">Alerts Center</h2>
+          <p className="mt-0.5 text-xs text-muted">Track active incidents, severity trends, and fast resolution context</p>
+        </div>
+        <ReportDownloadButton onGenerate={() => downloadAlertsReportPdf({ alerts, filtered, stats, tab })} />
+      </div>
+
       <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
           <div className="text-xs text-muted">Active alerts</div>
@@ -185,10 +231,11 @@ export default function Alerts() {
         {tabs.map((t) => (
           <button
             key={t.key}
+            type="button"
             onClick={() => setTab(t.key)}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition shadow-sm border border-border/50 ${
+            className={`rounded-xl border border-border/50 px-4 py-2 text-sm font-medium shadow-sm transition ${
               tab === t.key
-                ? 'bg-accent text-white shadow-accent/20 border-transparent'
+                ? 'border-transparent bg-accent text-white shadow-accent/20'
                 : 'bg-surface text-text hover:border-accent hover:text-accent'
             }`}
           >
@@ -205,21 +252,40 @@ export default function Alerts() {
                   key={`sk-${i}`}
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="rounded-full border border-border/50 bg-surface/80 px-4 py-3 shadow-sm backdrop-blur"
+                  className="rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur"
                 >
-                  <Skeleton height={14} width={260} baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
-                  <div className="mt-2">
-                    <Skeleton height={12} width={420} baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
+                  <div className="flex items-start gap-3">
+                    <Skeleton
+                      circle
+                      height={40}
+                      width={40}
+                      baseColor="rgba(100,116,139,0.15)"
+                      highlightColor="rgba(0,180,216,0.1)"
+                    />
+                    <div className="flex-1">
+                      <Skeleton height={16} width={240} baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
+                      <div className="mt-2">
+                        <Skeleton
+                          height={12}
+                          width={340}
+                          baseColor="rgba(100,116,139,0.15)"
+                          highlightColor="rgba(0,180,216,0.1)"
+                        />
+                      </div>
+                      <div className="mt-3">
+                        <Skeleton
+                          height={52}
+                          borderRadius={16}
+                          baseColor="rgba(100,116,139,0.15)"
+                          highlightColor="rgba(0,180,216,0.1)"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </motion.div>
               ))
             : filtered.map((a) => (
-                <motion.div
-                  key={a.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                >
+                <motion.div key={a.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
                   <AlertIsland
                     alert={a}
                     open={openId === a.id}

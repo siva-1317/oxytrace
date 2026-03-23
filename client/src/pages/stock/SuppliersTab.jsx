@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { apiJson } from '../../lib/api';
+import { apiJson, getCachedData } from '../../lib/api';
 import { Plus, Building2, Phone, Mail, Star, Edit, X } from 'lucide-react';
 import toast from 'react-hot-toast';
-import Skeleton from 'react-loading-skeleton';
 import { motion, AnimatePresence } from 'framer-motion';
+import { StockSuppliersShell } from '../../components/DashboardPageLoader.jsx';
 
 export default function SuppliersTab() {
   const { accessToken } = useAuth();
-  const [suppliers, setSuppliers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = '/api/stock/suppliers';
+  const [suppliers, setSuppliers] = useState(() => getCachedData(cacheKey)?.suppliers || []);
+  const [loading, setLoading] = useState(() => !getCachedData(cacheKey));
   
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -29,9 +30,9 @@ export default function SuppliersTab() {
   });
 
   const fetchSuppliers = async () => {
-    setLoading(true);
+    if (!getCachedData(cacheKey)) setLoading(true);
     try {
-      const res = await apiJson('/api/stock/suppliers', { token: accessToken });
+      const res = await apiJson('/api/stock/suppliers', { token: accessToken, cacheKey });
       setSuppliers(res.suppliers || []);
     } catch (err) {
       toast.error('Failed to load suppliers');
@@ -83,6 +84,7 @@ export default function SuppliersTab() {
       await apiJson(endpoint, {
         method,
         token: accessToken,
+        queueOffline: true,
         body: formData
       });
       
@@ -96,6 +98,10 @@ export default function SuppliersTab() {
 
   const formatCurrency = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(val || 0);
 
+  if (loading && !suppliers.length) {
+    return <StockSuppliersShell />;
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -106,17 +112,7 @@ export default function SuppliersTab() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {loading ? (
-          Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="rounded-2xl border border-border/50 bg-surface/70 p-5 shadow-sm backdrop-blur">
-              <Skeleton height={24} width="60%" baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
-              <div className="mt-4 space-y-2">
-                <Skeleton height={14} baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
-                <Skeleton height={14} width="80%" baseColor="rgba(100,116,139,0.15)" highlightColor="rgba(0,180,216,0.1)" />
-              </div>
-            </div>
-          ))
-        ) : suppliers.length > 0 ? (
+        {suppliers.length > 0 ? (
           suppliers.map((s) => (
             <div key={s.id} className="rounded-2xl border border-border/50 bg-surface/70 p-5 shadow-sm backdrop-blur transition hover:border-accent hover:-translate-y-1 hover:shadow-xl hover:shadow-accent/10 flex flex-col h-full group">
               <div className="flex justify-between items-start mb-4">
