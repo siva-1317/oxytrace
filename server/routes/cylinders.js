@@ -9,7 +9,7 @@ router.get('/', async (_req, res, next) => {
   try {
     const { data: cylinders, error } = await supabaseAdmin
       .from('cylinders')
-      .select('id, esp32_device_id, cylinder_name, location, ward, total_capacity_kg, last_refill_date, refill_threshold_pct, is_active, created_at')
+      .select('id, esp32_device_id, cylinder_name, location, ward, floor_name, total_capacity_kg, last_refill_date, refill_threshold_pct, is_active, created_at')
       .order('created_at', { ascending: false });
 
     if (error) throw new Error(error.message);

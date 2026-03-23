@@ -479,6 +479,7 @@ router.post('/orders', async (req, res, next) => {
   try {
     const body = req.body || {};
     const hospitalProfile = body.hospital_profile || {};
+    const sendSupplierEmail = body.send_supplier_email !== false;
     const order = {
       order_number: String(body.order_number || '').trim() || buildGeneratedOrderNumber(),
       supplier_id: body.supplier_id || null,
@@ -522,7 +523,9 @@ router.post('/orders', async (req, res, next) => {
     const out = await fetchOrderWithRelations(created.id);
     let emailStatus = { attempted: false, sent: false, reason: null };
 
-    if (out?.supplier?.email) {
+    if (!sendSupplierEmail) {
+      emailStatus.reason = 'email_disabled';
+    } else if (out?.supplier?.email) {
       emailStatus.attempted = true;
       if (!isMailConfigured()) {
         emailStatus.reason = 'mail_not_configured';
@@ -967,7 +970,43 @@ router.get('/inventory', async (_req, res, next) => {
       .order('cylinder_size', { ascending: true })
       .limit(5000);
     if (error) throw new Error(error.message);
-    res.json({ inventory: data || [] });
+
+    const inventory = data || [];
+    const { data: orderItems } = await supabaseAdmin
+      .from('stock_order_items')
+      .select('cylinder_size, gas_type, unit_price, order_id, stock_orders!inner(order_date, supplier_id, status), stock_orders!inner(suppliers!inner(supplier_name))')
+      .order('order_id', { ascending: false })
+      .limit(5000);
+
+    const latestSupplierByKey = new Map();
+    for (const item of orderItems || []) {
+      const order = Array.isArray(item.stock_orders) ? item.stock_orders[0] : item.stock_orders;
+      if (!order || !['partial', 'delivered', 'pending', 'in_transit'].includes(order.status)) continue;
+      const supplier = Array.isArray(order.suppliers) ? order.suppliers[0] : order.suppliers;
+      const key = `${item.cylinder_size}::${item.gas_type || 'oxygen'}`;
+      if (latestSupplierByKey.has(key)) continue;
+      latestSupplierByKey.set(key, {
+        supplier_id: order.supplier_id || null,
+        supplier_name: supplier?.supplier_name || null,
+        latest_order_date: order.order_date || null,
+        latest_unit_price: item.unit_price != null ? Number(item.unit_price) : null
+      });
+    }
+
+    res.json({
+      inventory: inventory.map((row) => {
+        const key = `${row.cylinder_size}::${row.gas_type || 'oxygen'}`;
+        const supplierMeta = latestSupplierByKey.get(key) || {};
+        return {
+          ...row,
+          supplier_id: supplierMeta.supplier_id || null,
+          supplier_name: supplierMeta.supplier_name || null,
+          latest_order_date: supplierMeta.latest_order_date || null,
+          latest_unit_price:
+            supplierMeta.latest_unit_price != null ? supplierMeta.latest_unit_price : Number(row.unit_price || 0)
+        };
+      })
+    });
   } catch (e) {
     next(e);
   }
@@ -1048,8 +1087,14 @@ router.post('/inventory/issue', async (req, res, next) => {
     const gas_type = String(body.gas_type || 'oxygen').trim();
     const ward = String(body.ward || '').trim();
     const quantity = Math.max(1, Number(body.quantity || 0));
+    const assignment_mode = String(body.assignment_mode || 'not_in_use').trim() || 'not_in_use';
+    const cylinder_id = body.cylinder_id ? String(body.cylinder_id).trim() : null;
     const performed_by = String(body.performed_by || '').trim() || req.user?.email || null;
+    const notes = String(body.notes || '').trim() || null;
     if (!cylinder_size || !ward) return res.status(400).json({ error: 'Missing cylinder_size/ward' });
+    if (!['not_in_use', 'map_device', 'replace_device'].includes(assignment_mode)) {
+      return res.status(400).json({ error: 'Invalid assignment_mode' });
+    }
 
     const row = await getInventoryRow(cylinder_size, gas_type);
     if (Number(row.quantity_full || 0) < quantity) {
@@ -1069,7 +1114,10 @@ router.post('/inventory/issue', async (req, res, next) => {
       reference_id: ward,
       reference_type: 'ward_issue',
       ward,
-      performed_by
+      performed_by,
+      notes: [notes, cylinder_id ? `Cylinder ID: ${cylinder_id}` : null, `Usage mode: ${assignment_mode}`]
+        .filter(Boolean)
+        .join(' | ')
     });
 
     res.json({ ok: true, inventory: updated });

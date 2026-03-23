@@ -17,6 +17,7 @@ import analyticsRoutes from './routes/analytics.js';
 import aiRoutes from './routes/ai.js';
 import settingsRoutes from './routes/settings.js';
 import stockRoutes from './routes/stock.js';
+import mappingRoutes from './routes/mapping.js';
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
@@ -29,6 +30,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/stock', stockRoutes);
+app.use('/api/mapping', mappingRoutes);
 
 app.get('/speed-test', (req, res) => {
   const size = Math.min(1024 * 1024, Math.max(64 * 1024, Number(req.query.size || 256 * 1024)));
