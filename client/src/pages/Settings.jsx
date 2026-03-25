@@ -8,7 +8,6 @@ import { loadHospitalProfile, saveHospitalProfile } from '../lib/hospitalProfile
 
 const tabs = [
   { key: 'profile', label: 'Hospital Details' },
-  { key: 'cylinders', label: 'Cylinders' },
   { key: 'cylinder-types', label: 'Cylinder Types' },
   { key: 'thresholds', label: 'Alert Thresholds' },
   { key: 'integrations', label: 'Integrations' },
@@ -19,8 +18,6 @@ export default function Settings() {
   const { user, accessToken } = useAuth();
   const { cylinders, refresh } = useCylinders();
   const [tab, setTab] = useState('profile');
-  const [drafts, setDrafts] = useState({});
-  const [savingId, setSavingId] = useState(null);
   const [typeSavingId, setTypeSavingId] = useState(null);
   const [thresholds, setThresholds] = useState({
     low_gas_pct: 20,
@@ -74,33 +71,8 @@ export default function Settings() {
     };
   }, [accessToken]);
 
-  function updateDraft(id, patch) {
-    setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
-  }
-
   function updateTypeDraft(id, patch) {
     setTypeDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
-  }
-
-  function getDraftRow(c) {
-    const d = drafts[c.id] || {};
-    return {
-      device_id: d.device_id ?? c.device_id ?? c.esp32_device_id ?? '',
-      cylinder_num: d.cylinder_num ?? c.cylinder_num ?? c.cylinder_name ?? '',
-      ward: d.ward ?? c.ward ?? '',
-      floor: d.floor ?? c.floor ?? c.floor_name ?? ''
-    };
-  }
-
-  function isDirty(c) {
-    if (!drafts[c.id]) return false;
-    const d = getDraftRow(c);
-    return (
-      String(d.device_id) !== String(c.device_id ?? c.esp32_device_id ?? '') ||
-      String(d.cylinder_num) !== String(c.cylinder_num ?? c.cylinder_name ?? '') ||
-      String(d.ward) !== String(c.ward ?? '') ||
-      String(d.floor) !== String(c.floor ?? c.floor_name ?? '')
-    );
   }
 
   function getTypeRow(type) {
@@ -120,50 +92,6 @@ export default function Settings() {
       Number(row.full_weight) !== Number(type.full_weight ?? 0) ||
       Number(row.empty_weight) !== Number(type.empty_weight ?? 0)
     );
-  }
-
-  async function saveRow(c) {
-    const d = getDraftRow(c);
-    setSavingId(c.id);
-    try {
-      await apiJson(`/api/cylinders/${c.id}`, {
-        token: accessToken,
-        method: 'PATCH',
-        body: {
-          device_id: String(d.device_id).trim(),
-          cylinder_num: String(d.cylinder_num).trim(),
-          ward: String(d.ward).trim(),
-          floor: String(d.floor).trim()
-        },
-        queueOffline: true
-      });
-      toast.success('Saved');
-      setDrafts((prev) => {
-        const next = { ...prev };
-        delete next[c.id];
-        return next;
-      });
-      refresh();
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      setSavingId(null);
-    }
-  }
-
-  async function deleteCylinder(id) {
-    if (!confirm('Delete this cylinder?')) return;
-    try {
-      await apiJson(`/api/cylinders/${id}`, {
-        token: accessToken,
-        method: 'DELETE',
-        queueOffline: true
-      });
-      toast.success('Deleted');
-      refresh();
-    } catch (e) {
-      toast.error(e.message);
-    }
   }
 
   async function saveThresholds() {
@@ -309,51 +237,6 @@ export default function Settings() {
           </div>
           <div className="mt-4">
             <button onClick={saveHospitalDetails} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">Save hospital details</button>
-          </div>
-        </div>
-      ) : null}
-
-      {tab === 'cylinders' ? (
-        <div className="rounded-2xl border border-border/50 bg-surface/70 shadow-sm backdrop-blur overflow-hidden">
-          <div className="overflow-x-auto custom-scrollbar">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-surface/50 text-xs uppercase text-muted border-b border-border/50">
-                <tr>
-                  <th className="px-5 py-4 font-semibold">Device</th>
-                  <th className="px-5 py-4 font-semibold">Cylinder</th>
-                  <th className="px-5 py-4 font-semibold">Ward</th>
-                  <th className="px-5 py-4 font-semibold">Floor</th>
-                  <th className="px-5 py-4 font-semibold">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/30">
-                {cylinders.map((c) => {
-                  const row = getDraftRow(c);
-                  const dirty = isDirty(c);
-                  const saving = savingId === c.id;
-                  return (
-                    <tr key={c.id} className="hover:bg-accent/5 transition group">
-                      <td className="px-5 py-4"><input value={row.device_id} onChange={(e) => updateDraft(c.id, { device_id: e.target.value })} className="w-44 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none" /></td>
-                      <td className="px-5 py-4"><input value={row.cylinder_num} onChange={(e) => updateDraft(c.id, { cylinder_num: e.target.value })} className="w-40 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none" /></td>
-                      <td className="px-5 py-4"><input value={row.ward} onChange={(e) => updateDraft(c.id, { ward: e.target.value })} className="w-36 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none" /></td>
-                      <td className="px-5 py-4"><input value={row.floor} onChange={(e) => updateDraft(c.id, { floor: e.target.value })} className="w-36 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none" /></td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => saveRow(c)} disabled={!dirty || saving} className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-surface px-3 py-1.5 text-xs font-semibold text-text shadow-sm transition hover:border-accent hover:text-accent disabled:opacity-50">
-                            <Save size={14} />
-                            {saving ? 'Saving...' : 'Save'}
-                          </button>
-                          <button onClick={() => deleteCylinder(c.id)} className="inline-flex items-center gap-2 rounded-lg bg-danger px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-danger/90">
-                            <Trash2 size={14} />
-                            Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
           </div>
         </div>
       ) : null}

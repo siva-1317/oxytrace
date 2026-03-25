@@ -199,6 +199,10 @@ export default function Mapping() {
   const [newWard, setNewWard] = useState({ name: '', code: '' });
   const [newCylinderNumber, setNewCylinderNumber] = useState('');
   const [newDeviceId, setNewDeviceId] = useState('');
+  const [mappingView, setMappingView] = useState('map');
+  const [tableDrafts, setTableDrafts] = useState({});
+  const [tableSavingId, setTableSavingId] = useState(null);
+  const [newConnection, setNewConnection] = useState({ cylinder_id: '', device_id: '', ward: '', floor: '' });
 
   function buildManualDeviceNode(deviceId) {
     const normalized = String(deviceId || '').trim();
@@ -467,6 +471,28 @@ function handlePointerUp(event) {
     { key: 'cylinders', label: 'Cylinders', items: catalog.cylinders.map((i) => buildCatalogItem('cylinder', i)).filter((i) => !nodes.some((n) => n.id === makeNodeId(i.type, i.sourceId))) },
     { key: 'devices', label: 'Devices', items: catalog.devices.map((i) => buildCatalogItem('device', i)).filter((i) => !nodes.some((n) => n.id === makeNodeId(i.type, i.sourceId))) }
   ], [catalog, nodes]);
+
+  const workspaceConnectionMap = useMemo(() => {
+    const byCylinderId = new Map();
+
+    for (const cylinderNode of nodes.filter((node) => node.type === 'cylinder')) {
+      const incomingDeviceEdge = edges.find((edge) => edge.target === cylinderNode.id && nodeMap.get(edge.source)?.type === 'device');
+      const wardEdge = edges.find((edge) => edge.source === cylinderNode.id && nodeMap.get(edge.target)?.type === 'ward');
+      const wardNode = wardEdge ? nodeMap.get(wardEdge.target) : null;
+      const floorEdge = wardNode ? edges.find((edge) => edge.source === wardNode.id && nodeMap.get(edge.target)?.type === 'floor') : null;
+      const floorNode = floorEdge ? nodeMap.get(floorEdge.target) : null;
+      const deviceNode = incomingDeviceEdge ? nodeMap.get(incomingDeviceEdge.source) : null;
+
+      byCylinderId.set(String(cylinderNode.sourceId || ''), {
+        cylinder_num: cylinderNode.label || cylinderNode.meta?.displayId || '',
+        device_id: deviceNode?.sourceId || deviceNode?.label || '',
+        ward: wardNode?.label || '',
+        floor: floorNode?.label || ''
+      });
+    }
+
+    return byCylinderId;
+  }, [nodes, edges, nodeMap]);
 
   const viewportBox = useMemo(() => {
     const mapWidth = 200;
@@ -788,6 +814,303 @@ function startConnectionDrag(event, node) {
     }
   }
 
+  function updateTableDraft(id, patch) {
+    setTableDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
+  }
+
+  function getTableRow(cylinder) {
+    const draft = tableDrafts[cylinder.id] || {};
+    const workspaceRow = workspaceConnectionMap.get(String(cylinder.id || '')) || {};
+    return {
+      cylinder_num: draft.cylinder_num ?? workspaceRow.cylinder_num ?? cylinder.cylinder_num ?? '',
+      device_id: draft.device_id ?? workspaceRow.device_id ?? cylinder.device_id ?? '',
+      ward: draft.ward ?? workspaceRow.ward ?? cylinder.ward ?? '',
+      floor: draft.floor ?? workspaceRow.floor ?? cylinder.floor ?? ''
+    };
+  }
+
+  function isTableRowDirty(cylinder) {
+    if (!tableDrafts[cylinder.id]) return false;
+    const row = getTableRow(cylinder);
+    const workspaceRow = workspaceConnectionMap.get(String(cylinder.id || '')) || {};
+    return (
+      String(row.cylinder_num) !== String(workspaceRow.cylinder_num ?? cylinder.cylinder_num ?? '') ||
+      String(row.device_id) !== String(workspaceRow.device_id ?? cylinder.device_id ?? '') ||
+      String(row.ward) !== String(workspaceRow.ward ?? cylinder.ward ?? '') ||
+      String(row.floor) !== String(workspaceRow.floor ?? cylinder.floor ?? '')
+    );
+  }
+
+  function nextTablePosition(type, index = 0) {
+    const columnX = {
+      device: 140,
+      cylinder: 470,
+      ward: 800,
+      floor: 1130
+    };
+    return {
+      x: columnX[type] || 140,
+      y: 120 + (index % 6) * 140
+    };
+  }
+
+  function ensureWorkspaceNode(nextNodes, type, item) {
+    const nodeId = makeNodeId(type, item.id);
+    const existing = nextNodes.find((node) => node.id === nodeId);
+    const catalogItem = buildCatalogItem(type, item);
+
+    if (existing) {
+      return nextNodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              label: catalogItem.title,
+              meta: {
+                displayId: catalogItem.displayId,
+                ...catalogItem.meta
+              }
+            }
+          : node
+      );
+    }
+
+    return [...nextNodes, buildWorkspaceNode(type, catalogItem, nextTablePosition(type, nextNodes.length))];
+  }
+
+  function upsertTableCatalog(nextCatalog, type, value, currentId = null) {
+    const normalized = String(value || '').trim();
+    if (!normalized) return { nextCatalog, item: null };
+
+    if (type === 'device') {
+      const existing = nextCatalog.devices.find(
+        (device) => String(device.device_id || device.id || '').trim().toLowerCase() === normalized.toLowerCase()
+      );
+      if (existing) return { nextCatalog, item: { id: existing.id || existing.device_id, device_id: existing.device_id || existing.id } };
+
+      const device = { id: normalized, device_id: normalized };
+      return {
+        nextCatalog: {
+          ...nextCatalog,
+          devices: [device, ...nextCatalog.devices]
+        },
+        item: device
+      };
+    }
+
+    if (type === 'ward') {
+      const existing = nextCatalog.wards.find((ward) => String(ward.name || '').trim().toLowerCase() === normalized.toLowerCase());
+      if (existing) return { nextCatalog, item: existing };
+
+      const ward = { id: makeTempId('ward'), name: normalized, code: null, _pending: true };
+      return {
+        nextCatalog: {
+          ...nextCatalog,
+          wards: [...nextCatalog.wards, ward]
+        },
+        item: ward
+      };
+    }
+
+    if (type === 'floor') {
+      const existing = nextCatalog.floors.find((floor) => String(floor.name || '').trim().toLowerCase() === normalized.toLowerCase());
+      if (existing) return { nextCatalog, item: existing };
+
+      const floor = { id: makeTempId('floor'), name: normalized, code: null, _pending: true };
+      return {
+        nextCatalog: {
+          ...nextCatalog,
+          floors: [...nextCatalog.floors, floor]
+        },
+        item: floor
+      };
+    }
+
+    const existing =
+      nextCatalog.cylinders.find((cylinder) => String(cylinder.id || '').trim() === String(currentId || '').trim()) ||
+      nextCatalog.cylinders.find((cylinder) => String(cylinder.cylinder_num || '').trim().toLowerCase() === normalized.toLowerCase());
+    if (existing) {
+      const updated = { ...existing, cylinder_num: normalized };
+      return {
+        nextCatalog: {
+          ...nextCatalog,
+          cylinders: nextCatalog.cylinders.map((cylinder) => (cylinder.id === updated.id ? updated : cylinder))
+        },
+        item: updated
+      };
+    }
+
+    const cylinder = {
+      id: makeTempId('cylinder'),
+      cylinder_num: normalized,
+      ward: 'Unassigned',
+      floor: null,
+      device_id: null,
+      is_active: true,
+      _pending: true
+    };
+    return {
+      nextCatalog: {
+        ...nextCatalog,
+        cylinders: [cylinder, ...nextCatalog.cylinders]
+      },
+      item: cylinder
+    };
+  }
+
+  function applyTableConnectionState(baseCylinder, values) {
+    const normalized = {
+      cylinder_num: String(values.cylinder_num || '').trim(),
+      device_id: String(values.device_id || '').trim(),
+      ward: String(values.ward || '').trim(),
+      floor: String(values.floor || '').trim()
+    };
+
+    let nextCatalog = {
+      floors: [...catalog.floors],
+      wards: [...catalog.wards],
+      cylinders: [...catalog.cylinders],
+      devices: [...catalog.devices]
+    };
+    let nextNodes = [...nodes];
+    let nextEdges = [...edges];
+
+    const cylinderResult = upsertTableCatalog(nextCatalog, 'cylinder', normalized.cylinder_num, baseCylinder?.id || null);
+    nextCatalog = cylinderResult.nextCatalog;
+    const cylinderItem = {
+      ...cylinderResult.item,
+      ward: normalized.ward || 'Unassigned',
+      floor: normalized.floor || null,
+      device_id: normalized.device_id || null
+    };
+    nextCatalog.cylinders = nextCatalog.cylinders.map((cylinder) => (cylinder.id === cylinderItem.id ? cylinderItem : cylinder));
+    nextNodes = ensureWorkspaceNode(nextNodes, 'cylinder', cylinderItem);
+
+    let wardItem = null;
+    let floorItem = null;
+    let deviceItem = null;
+
+    if (normalized.ward) {
+      const wardResult = upsertTableCatalog(nextCatalog, 'ward', normalized.ward);
+      nextCatalog = wardResult.nextCatalog;
+      wardItem = wardResult.item;
+      nextNodes = ensureWorkspaceNode(nextNodes, 'ward', wardItem);
+    }
+
+    if (normalized.floor) {
+      const floorResult = upsertTableCatalog(nextCatalog, 'floor', normalized.floor);
+      nextCatalog = floorResult.nextCatalog;
+      floorItem = floorResult.item;
+      nextNodes = ensureWorkspaceNode(nextNodes, 'floor', floorItem);
+    }
+
+    if (normalized.device_id) {
+      const deviceResult = upsertTableCatalog(nextCatalog, 'device', normalized.device_id);
+      nextCatalog = deviceResult.nextCatalog;
+      deviceItem = deviceResult.item;
+      nextNodes = ensureWorkspaceNode(nextNodes, 'device', deviceItem);
+    }
+
+    const cylinderNodeId = makeNodeId('cylinder', cylinderItem.id);
+    const wardNodeId = wardItem ? makeNodeId('ward', wardItem.id) : null;
+    const floorNodeId = floorItem ? makeNodeId('floor', floorItem.id) : null;
+    const deviceNodeId = deviceItem ? makeNodeId('device', deviceItem.id || deviceItem.device_id) : null;
+
+    nextEdges = nextEdges.filter((edge) => {
+      if (edge.target === cylinderNodeId && nodeMap.get(edge.source)?.type === 'device') return false;
+      if (edge.source === cylinderNodeId) return false;
+      if (wardNodeId && edge.source === wardNodeId) return false;
+      if (deviceNodeId && edge.source === deviceNodeId) return false;
+      return true;
+    });
+
+    if (deviceNodeId) nextEdges = [...nextEdges, makeEdge(deviceNodeId, cylinderNodeId)];
+    if (wardNodeId) nextEdges = [...nextEdges, makeEdge(cylinderNodeId, wardNodeId)];
+    if (wardNodeId && floorNodeId) nextEdges = [...nextEdges, makeEdge(wardNodeId, floorNodeId)];
+
+    setCatalog(nextCatalog);
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    setDirty(true);
+
+    return cylinderItem;
+  }
+
+  async function saveTableRow(cylinder) {
+    const row = getTableRow(cylinder);
+    setTableSavingId(cylinder.id);
+    try {
+      applyTableConnectionState(cylinder, row);
+      toast.success('Connection updated. Click Save Mapping');
+      setTableDrafts((prev) => {
+        const next = { ...prev };
+        delete next[cylinder.id];
+        return next;
+      });
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setTableSavingId(null);
+    }
+  }
+
+  async function deleteTableRow(cylinderId) {
+    if (!confirm('Delete this cylinder?')) return;
+    try {
+      await apiJson(`/api/mapping/cylinders/${cylinderId}`, {
+        token: accessToken,
+        method: 'DELETE',
+        queueOffline: true
+      });
+      toast.success('Cylinder deleted');
+      await loadWorkspace();
+    } catch (error) {
+      toast.error(error.message);
+    }
+  }
+
+  async function createTableConnection(event) {
+    event.preventDefault();
+    const cylinderValue = String(newConnection.cylinder_id || '').trim();
+    if (!cylinderValue) return toast.error('Enter a cylinder');
+
+    let matchedCylinder = tableCylinders.find(
+      (cylinder) =>
+        String(cylinder.id || '').trim() === cylinderValue ||
+        String(cylinder.cylinder_num || '').trim().toLowerCase() === cylinderValue.toLowerCase()
+    );
+
+    try {
+      applyTableConnectionState(matchedCylinder || null, {
+        cylinder_num: cylinderValue,
+        device_id: newConnection.device_id,
+        ward: newConnection.ward,
+        floor: newConnection.floor
+      });
+      toast.success('Connection created. Click Save Mapping');
+      setNewConnection({ cylinder_id: '', device_id: '', ward: '', floor: '' });
+    } catch (error) {
+      toast.error(error.message);
+    }
+  }
+
+  const typeOrder = ['device', 'cylinder', 'ward', 'floor'];
+  const tableCylinders = useMemo(
+    () => [...catalog.cylinders].sort((a, b) => String(a.cylinder_num || '').localeCompare(String(b.cylinder_num || ''))),
+    [catalog.cylinders]
+  );
+  const availableDevices = useMemo(
+    () => catalog.devices.map((device) => String(device.device_id || device.id || '').trim()).filter(Boolean),
+    [catalog.devices]
+  );
+  const availableWards = useMemo(
+    () => catalog.wards.map((ward) => String(ward.name || '').trim()).filter(Boolean),
+    [catalog.wards]
+  );
+  const availableFloors = useMemo(
+    () => catalog.floors.map((floor) => String(floor.name || '').trim()).filter(Boolean),
+    [catalog.floors]
+  );
+
 
   if (loading) {
     return (
@@ -803,8 +1126,6 @@ function startConnectionDrag(event, node) {
       </div>
     );
   }
-
-  const typeOrder = ['device', 'cylinder', 'ward', 'floor'];
 
   return (
     <div className="flex flex-col gap-4">
@@ -822,6 +1143,20 @@ function startConnectionDrag(event, node) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className={`flex items-center gap-1 rounded-xl border border-border/50 bg-background/60 p-1 ${mappingView === 'table' ? 'opacity-50' : ''}`}>
+            <button
+              onClick={() => setMappingView('map')}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${mappingView === 'map' ? 'bg-accent text-white' : 'text-muted hover:bg-surface hover:text-text'}`}
+            >
+              Map
+            </button>
+            <button
+              onClick={() => setMappingView('table')}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${mappingView === 'table' ? 'bg-accent text-white' : 'text-muted hover:bg-surface hover:text-text'}`}
+            >
+              Table
+            </button>
+          </div>
           {/* Zoom controls */}
           <div className="flex items-center gap-1 rounded-xl border border-border/50 bg-background/60 p-1">
             <button onClick={() => setViewport((p) => ({ ...p, zoom: Math.max(0.35, p.zoom - 0.1) }))} className="rounded-lg p-1.5 text-muted transition hover:bg-surface hover:text-text">
@@ -838,6 +1173,7 @@ function startConnectionDrag(event, node) {
           {activeConnection && (
             <button
               onClick={() => { setActiveConnection(null); actionRef.current = null; }}
+              disabled={mappingView === 'table'}
               className="rounded-xl border border-orange-500/30 bg-orange-500/10 px-3 py-1.5 text-xs font-medium text-orange-400 transition hover:bg-orange-500/15"
             >
               ✕ Cancel Connect
@@ -860,6 +1196,7 @@ function startConnectionDrag(event, node) {
       </div>
 
       {/* ── Main layout ── */}
+      {mappingView === 'map' ? (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
 
         {/* ── Sidebar ── */}
@@ -1330,6 +1667,158 @@ function startConnectionDrag(event, node) {
           </div>
         </section>
       </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur">
+            <div className="text-sm font-semibold text-text">Create Connection</div>
+            <form onSubmit={createTableConnection} className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+              <label className="text-xs text-muted">
+                Cylinder
+                <input
+                  list="mapping-cylinder-options"
+                  value={newConnection.cylinder_id}
+                  onChange={(e) => setNewConnection((prev) => ({ ...prev, cylinder_id: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  placeholder="Cylinder number"
+                  required
+                />
+              </label>
+              <label className="text-xs text-muted">
+                Device ID
+                <input
+                  list="mapping-device-options"
+                  value={newConnection.device_id}
+                  onChange={(e) => setNewConnection((prev) => ({ ...prev, device_id: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  placeholder="Device ID"
+                />
+              </label>
+              <label className="text-xs text-muted">
+                Ward
+                <input
+                  list="mapping-ward-options"
+                  value={newConnection.ward}
+                  onChange={(e) => setNewConnection((prev) => ({ ...prev, ward: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  placeholder="Ward"
+                />
+              </label>
+              <label className="text-xs text-muted">
+                Floor
+                <input
+                  list="mapping-floor-options"
+                  value={newConnection.floor}
+                  onChange={(e) => setNewConnection((prev) => ({ ...prev, floor: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  placeholder="Floor"
+                />
+              </label>
+              <div className="md:col-span-4">
+                <button className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent/90">
+                  Create Connection
+                </button>
+              </div>
+            </form>
+            <datalist id="mapping-device-options">
+              {availableDevices.map((deviceId) => (
+                <option key={deviceId} value={deviceId} />
+              ))}
+            </datalist>
+            <datalist id="mapping-cylinder-options">
+              {tableCylinders.map((cylinder) => (
+                <option key={cylinder.id} value={cylinder.cylinder_num || cylinder.id} />
+              ))}
+            </datalist>
+            <datalist id="mapping-ward-options">
+              {availableWards.map((ward) => (
+                <option key={ward} value={ward} />
+              ))}
+            </datalist>
+            <datalist id="mapping-floor-options">
+              {availableFloors.map((floor) => (
+                <option key={floor} value={floor} />
+              ))}
+            </datalist>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border border-border/50 bg-surface/70 shadow-sm backdrop-blur">
+            <div className="overflow-x-auto custom-scrollbar">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-border/50 bg-surface/50 text-xs uppercase text-muted">
+                  <tr>
+                    <th className="px-5 py-4 font-semibold">Cylinder</th>
+                    <th className="px-5 py-4 font-semibold">Device</th>
+                    <th className="px-5 py-4 font-semibold">Ward</th>
+                    <th className="px-5 py-4 font-semibold">Floor</th>
+                    <th className="px-5 py-4 font-semibold">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30">
+                  {tableCylinders.map((cylinder) => {
+                    const row = getTableRow(cylinder);
+                    const dirty = isTableRowDirty(cylinder);
+                    const saving = tableSavingId === cylinder.id;
+                    return (
+                      <tr key={cylinder.id} className="group transition hover:bg-accent/5">
+                        <td className="px-5 py-4">
+                          <input
+                            value={row.cylinder_num}
+                            onChange={(e) => updateTableDraft(cylinder.id, { cylinder_num: e.target.value })}
+                            className="w-36 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none"
+                          />
+                        </td>
+                        <td className="px-5 py-4">
+                          <input
+                            list="mapping-device-options"
+                            value={row.device_id}
+                            onChange={(e) => updateTableDraft(cylinder.id, { device_id: e.target.value })}
+                            className="w-48 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none"
+                          />
+                        </td>
+                        <td className="px-5 py-4">
+                          <input
+                            list="mapping-ward-options"
+                            value={row.ward}
+                            onChange={(e) => updateTableDraft(cylinder.id, { ward: e.target.value })}
+                            className="w-36 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none"
+                          />
+                        </td>
+                        <td className="px-5 py-4">
+                          <input
+                            list="mapping-floor-options"
+                            value={row.floor}
+                            onChange={(e) => updateTableDraft(cylinder.id, { floor: e.target.value })}
+                            className="w-36 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none"
+                          />
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => saveTableRow(cylinder)}
+                              disabled={!dirty || saving}
+                              className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-surface px-3 py-1.5 text-xs font-semibold text-text shadow-sm transition hover:border-accent hover:text-accent disabled:opacity-50"
+                            >
+                              <Save size={14} />
+                              {saving ? 'Saving...' : 'Save'}
+                            </button>
+                            <button
+                              onClick={() => deleteTableRow(cylinder.id)}
+                              className="inline-flex items-center gap-2 rounded-lg bg-danger px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-danger/90"
+                            >
+                              <Trash2 size={14} />
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
