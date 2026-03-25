@@ -115,23 +115,31 @@ export default function SuppliersTab() {
         {suppliers.length > 0 ? (
           suppliers.map((s) => (
             <div key={s.id} className="rounded-2xl border border-border/50 bg-surface/70 p-5 shadow-sm backdrop-blur transition hover:border-accent hover:-translate-y-1 hover:shadow-xl hover:shadow-accent/10 flex flex-col h-full group">
-              <div className="flex justify-between items-start mb-4">
-                <div className="flex items-center gap-3">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
                   <div className="h-10 w-10 flex items-center justify-center rounded-xl bg-accent/10 text-accent">
                     <Building2 size={20} />
                   </div>
-                  <div>
-                    <h3 className="text-text font-bold text-base leading-tight">{s.supplier_name}</h3>
+                  <div className="min-w-0">
+                    <h3 className="text-text font-bold text-base leading-tight break-words">{s.supplier_name}</h3>
                     <span className="text-[10px] uppercase tracking-wider font-semibold text-accent bg-accent/10 px-1.5 py-0.5 rounded-sm">
                       {s.supplier_type}
                     </span>
                   </div>
                 </div>
-                {s.rating > 0 && (
-                  <div className="flex items-center gap-1 text-warning bg-warning/10 px-2 py-1 rounded-lg text-xs font-bold">
-                    <Star size={12} fill="currentColor" /> {s.rating}
-                  </div>
-                )}
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {s.rating > 0 && (
+                    <div className="flex items-center gap-1 text-warning bg-warning/10 px-2 py-1 rounded-lg text-xs font-bold">
+                      <Star size={12} fill="currentColor" /> {s.rating}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => openEdit(s)}
+                    className="p-1.5 bg-surface rounded-lg text-muted hover:text-accent border border-border/50 hover:border-accent/40 shadow-sm transition"
+                  >
+                    <Edit size={14}/>
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2 text-sm text-muted flex-grow mb-4">
@@ -170,10 +178,6 @@ export default function SuppliersTab() {
                     {Number(s.stats?.on_time_delivery_pct || 0).toFixed(0)}%
                   </span>
                 </div>
-              </div>
-
-              <div className="absolute top-4 right-4 opacity-100 transition flex gap-1">
-                <button onClick={() => openEdit(s)} className="p-1.5 bg-surface rounded-lg text-muted hover:text-accent border border-border/50 hover:border-accent/40 shadow-sm transition"><Edit size={14}/></button>
               </div>
             </div>
           ))

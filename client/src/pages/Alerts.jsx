@@ -29,7 +29,7 @@ function severityCard(sev) {
 }
 
 function AlertIsland({ alert, open, onToggle, onResolve }) {
-  const cylinderName = alert.cylinder?.cylinder_name || alert.cylinder_name || alert.esp32_device_id;
+  const cylinderName = alert.cylinder?.cylinder_num || alert.cylinder?.cylinder_name || alert.cylinder_num || alert.cylinder_name || alert.esp32_device_id;
   const ward = alert.cylinder?.ward || alert.ward;
   const icon = alert.severity === 'critical' ? <AlertTriangle size={18} /> : <BellRing size={18} />;
 

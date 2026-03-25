@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { normalizeTelemetryRow } from '../lib/telemetry.js';
 
 export function useRealtime(onNewReading, onNewAlert) {
   useEffect(() => {
@@ -7,8 +8,15 @@ export function useRealtime(onNewReading, onNewAlert) {
       .channel('oxytrace-live')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'sensor_readings' },
-        (payload) => onNewReading?.(payload.new)
+        { event: 'INSERT', schema: 'public', table: 'iot_telemetry' },
+        (payload) => {
+          const normalizedReading = normalizeTelemetryRow(payload.new);
+          console.debug('[useRealtime] iot_telemetry insert', {
+            raw: payload.new,
+            normalized: normalizedReading
+          });
+          onNewReading?.(normalizedReading);
+        }
       )
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alerts' }, (payload) =>
         onNewAlert?.(payload.new)
@@ -21,4 +29,3 @@ export function useRealtime(onNewReading, onNewAlert) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }
-

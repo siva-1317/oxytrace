@@ -8,6 +8,13 @@ import { StockTableShell } from '../../components/DashboardPageLoader.jsx';
 import { loadHospitalProfile } from '../../lib/hospitalProfile.js';
 
 const PAYMENT_HISTORY_MARKER = '__OXYTRACE_PAYMENT_HISTORY__';
+const DEFAULT_ORDER_ITEM = {
+  cylinder_size: 'B-type 10L',
+  gas_type: 'oxygen',
+  stock_mode: 'replace_cylinder',
+  quantity_ordered: 1,
+  unit_price: 0
+};
 const buildGeneratedInvoiceNumber = () => {
   const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').replaceAll('T', '').replaceAll('Z', '').replaceAll('.', '').slice(0, 12);
   const nonce = Math.random().toString(36).slice(2, 5).toUpperCase();
@@ -20,6 +27,14 @@ export default function OrdersTab() {
   const [suppliers, setSuppliers] = useState(() => getCachedData('/api/stock/suppliers')?.suppliers || []);
   const [loading, setLoading] = useState(() => !getCachedData('/api/stock/orders?page=1&pageSize=50'));
   const [search, setSearch] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState({
+    status: '',
+    payment_status: '',
+    supplier_id: '',
+    from: '',
+    to: ''
+  });
 
   // Modals state
   const [showNewOrder, setShowNewOrder] = useState(false);
@@ -45,8 +60,9 @@ export default function OrdersTab() {
     order_date: new Date().toISOString().slice(0, 10),
     expected_delivery_date: '',
     invoice_number: buildGeneratedInvoiceNumber(),
+    send_supplier_email: true,
     notes: '',
-    items: [{ cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
+    items: [{ ...DEFAULT_ORDER_ITEM }]
   });
 
   // Deliver Form State
@@ -106,7 +122,7 @@ export default function OrdersTab() {
   const handleAddRow = () => {
     setOrderForm({
       ...orderForm,
-      items: [...orderForm.items, { cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
+      items: [...orderForm.items, { ...DEFAULT_ORDER_ITEM }]
     });
   };
 
@@ -156,8 +172,9 @@ export default function OrdersTab() {
       setOrderForm({
         supplier_id: '', order_date: new Date().toISOString().slice(0, 10), expected_delivery_date: '',
         invoice_number: buildGeneratedInvoiceNumber(),
+        send_supplier_email: true,
         notes: '',
-        items: [{ cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
+        items: [{ ...DEFAULT_ORDER_ITEM }]
       });
       if (res?.email?.attempted && !res?.email?.sent && res?.email?.reason) {
         toast.error(`Supplier email status: ${res.email.reason}`);
@@ -180,7 +197,8 @@ export default function OrdersTab() {
           items: deliverItems.map(it => ({
             id: it.id,
             quantity_received: Number(it.received_so_far || 0) + Number(it.receive_now || 0),
-            condition: it.condition
+            condition: it.condition,
+            stock_mode: it.stock_mode
           }))
         }
       });
@@ -192,6 +210,7 @@ export default function OrdersTab() {
           id: it.id,
           cylinder_size: it.cylinder_size,
           gas_type: it.gas_type,
+          stock_mode: it.stock_mode || 'replace_cylinder',
           ordered: it.quantity_ordered,
           received_so_far: Number(it.quantity_received || 0),
           remaining: Math.max(0, Number(it.quantity_ordered || 0) - Number(it.quantity_received || 0)),
@@ -326,6 +345,7 @@ export default function OrdersTab() {
           id: it.id,
           cylinder_size: it.cylinder_size,
           gas_type: it.gas_type,
+          stock_mode: it.stock_mode || 'replace_cylinder',
           ordered: it.quantity_ordered,
           received_so_far: Number(it.quantity_received || 0),
           remaining: Math.max(0, Number(it.quantity_ordered || 0) - Number(it.quantity_received || 0)),
@@ -473,8 +493,9 @@ export default function OrdersTab() {
       order_date: new Date().toISOString().slice(0, 10),
       expected_delivery_date: '',
       invoice_number: buildGeneratedInvoiceNumber(),
+      send_supplier_email: true,
       notes: '',
-      items: [{ cylinder_size: 'B-type 10L', gas_type: 'oxygen', quantity_ordered: 1, unit_price: 0 }]
+      items: [{ ...DEFAULT_ORDER_ITEM }]
     });
     setShowNewOrder(true);
   };
@@ -483,6 +504,37 @@ export default function OrdersTab() {
     () => (activeOrder ? extractPaymentHistory(activeOrder.notes).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) : []),
     [activeOrder]
   );
+
+  const filteredOrders = useMemo(() => {
+    return orders.filter((order) => {
+      const matchesSearch =
+        order.order_number?.toLowerCase().includes(search.toLowerCase()) ||
+        order.supplier?.supplier_name?.toLowerCase().includes(search.toLowerCase());
+      if (!matchesSearch) return false;
+
+      if (filters.status && order.status !== filters.status) return false;
+      if (filters.payment_status && order.payment_status !== filters.payment_status) return false;
+      if (filters.supplier_id && String(order.supplier_id || '') !== String(filters.supplier_id)) return false;
+
+      const orderDate = String(order.order_date || '').slice(0, 10);
+      if (filters.from && orderDate && orderDate < filters.from) return false;
+      if (filters.to && orderDate && orderDate > filters.to) return false;
+
+      return true;
+    });
+  }, [filters, orders, search]);
+
+  const hasActiveFilters = Object.values(filters).some(Boolean);
+
+  const clearFilters = () => {
+    setFilters({
+      status: '',
+      payment_status: '',
+      supplier_id: '',
+      from: '',
+      to: ''
+    });
+  };
 
   if (loading && !orders.length) {
     return <StockTableShell rows={5} columns={8} header={true} topbar={true} />;
@@ -503,7 +555,15 @@ export default function OrdersTab() {
         </div>
         
         <div className="flex items-center gap-3 w-full md:w-auto">
-          <button className="flex items-center justify-center gap-2 bg-surface/60 border border-border/50 px-4 py-2 rounded-xl text-sm font-medium hover:border-text/30 transition w-full md:w-auto">
+          <button
+            type="button"
+            onClick={() => setShowFilters(true)}
+            className={`flex items-center justify-center gap-2 border px-4 py-2 rounded-xl text-sm font-medium transition w-full md:w-auto ${
+              hasActiveFilters
+                ? 'bg-accent/10 text-accent border-accent/40'
+                : 'bg-surface/60 border-border/50 hover:border-text/30'
+            }`}
+          >
             <Filter size={16} /> Filters
           </button>
           <button onClick={openNewOrderModal} className="flex items-center justify-center gap-2 bg-accent hover:bg-accent/90 text-white px-4 py-2 rounded-xl text-sm font-semibold transition shadow-lg shadow-accent/20 w-full md:w-auto">
@@ -528,8 +588,8 @@ export default function OrdersTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {orders.filter(o => o.order_number.toLowerCase().includes(search.toLowerCase())).length > 0 ? (
-                orders.filter(o => o.order_number.toLowerCase().includes(search.toLowerCase())).map((order) => (
+              {filteredOrders.length > 0 ? (
+                filteredOrders.map((order) => (
                   <tr key={order.id} className="hover:bg-accent/5 transition group">
                     <td className="px-4 py-3 font-medium text-text">{order.order_number}</td>
                     <td className="px-4 py-3 text-muted">{order.supplier?.supplier_name || 'Unknown'}</td>
@@ -562,13 +622,127 @@ export default function OrdersTab() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="8" className="px-4 py-8 text-center text-muted">No orders found.</td>
+                  <td colSpan="8" className="px-4 py-8 text-center text-muted">
+                    {hasActiveFilters || search ? 'No orders match the current filters.' : 'No orders found.'}
+                  </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      <AnimatePresence>
+        {showFilters ? (
+          <div
+            className="fixed inset-0 z-[55] flex items-start justify-center overflow-y-auto bg-background/80 p-4 pb-6 pt-24 backdrop-blur-sm"
+            onClick={() => setShowFilters(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-2xl rounded-2xl border border-border/60 bg-surface/95 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-border/50 p-4">
+                <div>
+                  <h2 className="text-base font-bold text-text">Filter Orders</h2>
+                  <p className="text-xs text-muted">Refine the order list by status, supplier, payment, and date.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFilters(false)}
+                  className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2">
+                <label className="text-xs text-muted">
+                  Order Status
+                  <select
+                    value={filters.status}
+                    onChange={(e) => setFilters((prev) => ({ ...prev, status: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                  >
+                    <option value="">All statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="in_transit">In transit</option>
+                    <option value="partial">Partial</option>
+                    <option value="delivered">Delivered</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </label>
+                <label className="text-xs text-muted">
+                  Payment Status
+                  <select
+                    value={filters.payment_status}
+                    onChange={(e) => setFilters((prev) => ({ ...prev, payment_status: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                  >
+                    <option value="">All payments</option>
+                    <option value="unpaid">Unpaid</option>
+                    <option value="partial">Partial</option>
+                    <option value="paid">Paid</option>
+                  </select>
+                </label>
+                <label className="text-xs text-muted">
+                  Supplier
+                  <select
+                    value={filters.supplier_id}
+                    onChange={(e) => setFilters((prev) => ({ ...prev, supplier_id: e.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                  >
+                    <option value="">All suppliers</option>
+                    {suppliers.map((supplier) => (
+                      <option key={supplier.id} value={supplier.id}>
+                        {supplier.supplier_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs text-muted">
+                    From Date
+                    <input
+                      type="date"
+                      value={filters.from}
+                      onChange={(e) => setFilters((prev) => ({ ...prev, from: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                    />
+                  </label>
+                  <label className="text-xs text-muted">
+                    To Date
+                    <input
+                      type="date"
+                      value={filters.to}
+                      onChange={(e) => setFilters((prev) => ({ ...prev, to: e.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-border/50 bg-background/70 px-3 py-2 text-sm text-text outline-none focus:border-accent transition"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-3 border-t border-border/50 p-4">
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="rounded-xl px-4 py-2 text-sm font-semibold text-muted hover:bg-card hover:text-text transition"
+                >
+                  Clear Filters
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowFilters(false)}
+                  className="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90"
+                >
+                  Apply
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
 
       {/* New Order Modal */}
       <AnimatePresence>
@@ -615,6 +789,28 @@ export default function OrdersTab() {
                     </div>
                   </div>
 
+                  <label className="flex items-center justify-between gap-4 rounded-xl border border-border/50 bg-card/20 px-4 py-3">
+                    <div>
+                      <div className="text-sm font-semibold text-text">Send supplier email</div>
+                      <div className="mt-1 text-xs text-muted">If turned off, the order will be created without sending a supplier mail.</div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={orderForm.send_supplier_email}
+                      onClick={() => setOrderForm((prev) => ({ ...prev, send_supplier_email: !prev.send_supplier_email }))}
+                      className={`relative inline-flex h-7 w-12 items-center rounded-full transition ${
+                        orderForm.send_supplier_email ? 'bg-accent' : 'bg-border/70'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                          orderForm.send_supplier_email ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </label>
+
                   <div>
                     <div className="flex items-center justify-between mb-2">
                        <label className="block text-sm font-bold text-text">Order Items</label>
@@ -625,7 +821,7 @@ export default function OrdersTab() {
                         <thead className="bg-surface/50 text-xs text-muted border-b border-border/50">
                           <tr>
                             <th className="px-3 py-2 font-medium">Cylinder Size</th>
-                            <th className="px-3 py-2 font-medium">Gas</th>
+                            <th className="px-3 py-2 font-medium">Stock Update</th>
                             <th className="px-3 py-2 font-medium w-24">Qty</th>
                             <th className="px-3 py-2 font-medium w-32">Unit Price (₹)</th>
                             <th className="px-3 py-2 font-medium w-24">Total</th>
@@ -643,10 +839,13 @@ export default function OrdersTab() {
                                 </select>
                               </td>
                               <td className="px-2 py-2">
-                                <select value={item.gas_type} onChange={e => handleItemChange(idx, 'gas_type', e.target.value)} className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-xs text-text outline-none">
-                                  <option>oxygen</option>
-                                  <option>medical_air</option>
-                                  <option>nitrous_oxide</option>
+                                <select
+                                  value={item.stock_mode || 'replace_cylinder'}
+                                  onChange={e => handleItemChange(idx, 'stock_mode', e.target.value)}
+                                  className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-xs text-text outline-none"
+                                >
+                                  <option value="new_cylinders">New cylinders</option>
+                                  <option value="replace_cylinder">Replace cylinder</option>
                                 </select>
                               </td>
                               <td className="px-2 py-2">
@@ -669,6 +868,9 @@ export default function OrdersTab() {
                     <div className="mt-3 text-right">
                        <span className="text-sm font-medium text-muted mr-3">Grand Total:</span>
                        <span className="text-xl font-bold text-text">{formatCurrency(calculateTotal())}</span>
+                    </div>
+                    <div className="mt-3 rounded-xl border border-border/40 bg-card/20 p-3 text-xs text-muted">
+                      `New cylinders` adds to full stock and increases total cylinder count. `Replace cylinder` adds to full stock and reduces empty stock so total cylinder count stays the same.
                     </div>
                   </div>
 
@@ -746,7 +948,7 @@ export default function OrdersTab() {
                         <thead className="bg-surface/50 text-xs text-muted border-b border-border/50">
                           <tr>
                             <th className="px-3 py-2 font-medium">Cylinder Size</th>
-                            <th className="px-3 py-2 font-medium">Gas</th>
+                            <th className="px-3 py-2 font-medium">Stock Update</th>
                             <th className="px-3 py-2 font-medium">Ordered</th>
                             <th className="px-3 py-2 font-medium">Received</th>
                             <th className="px-3 py-2 font-medium">Unit Price</th>
@@ -757,7 +959,9 @@ export default function OrdersTab() {
                           {(activeOrder.items || []).map((item) => (
                             <tr key={item.id}>
                               <td className="px-3 py-3 font-medium">{item.cylinder_size}</td>
-                              <td className="px-3 py-3 uppercase text-xs text-muted">{item.gas_type}</td>
+                              <td className="px-3 py-3 text-xs text-muted">
+                                {item.stock_mode === 'new_cylinders' ? 'New cylinders' : 'Replace cylinder'}
+                              </td>
                               <td className="px-3 py-3">{item.quantity_ordered}</td>
                               <td className="px-3 py-3">{item.quantity_received || 0}</td>
                               <td className="px-3 py-3">{formatCurrency(item.unit_price)}</td>
@@ -779,6 +983,7 @@ export default function OrdersTab() {
                             <thead className="border-b border-border/50 bg-surface/50 text-xs text-muted">
                               <tr>
                                 <th className="px-3 py-2 font-medium">Item</th>
+                                <th className="px-3 py-2 font-medium">Stock Update</th>
                                 <th className="px-3 py-2 text-center font-medium">Ordered</th>
                                 <th className="px-3 py-2 text-center font-medium">Remaining</th>
                                 <th className="px-3 py-2 font-medium">Receive Now</th>
@@ -791,7 +996,22 @@ export default function OrdersTab() {
                                   <tr key={item.id || idx}>
                                     <td className="px-3 py-3">
                                       <div className="font-semibold text-text">{item.cylinder_size}</div>
-                                      <div className="text-[10px] font-bold uppercase text-accent">{item.gas_type}</div>
+                                    </td>
+                                    <td className="px-3 py-3">
+                                      <select
+                                        value={item.stock_mode || 'replace_cylinder'}
+                                        onChange={(e) => {
+                                          setDeliverItems((prev) =>
+                                            prev.map((row, rowIndex) =>
+                                              rowIndex === idx ? { ...row, stock_mode: e.target.value } : row
+                                            )
+                                          );
+                                        }}
+                                        className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-sm text-text outline-none"
+                                      >
+                                        <option value="new_cylinders">New cylinders</option>
+                                        <option value="replace_cylinder">Replace cylinder</option>
+                                      </select>
                                     </td>
                                     <td className="px-3 py-3 text-center text-text">{item.ordered}</td>
                                     <td className="px-3 py-3 text-center text-warning">{Math.max(0, Number(item.remaining || 0))}</td>
@@ -828,7 +1048,7 @@ export default function OrdersTab() {
                           </table>
                         </div>
                         <div className="rounded-xl border border-warning/20 bg-warning/10 p-3 text-xs text-warning">
-                          Receive the pending quantity from here. This updates inventory and the order delivery status automatically.
+                          Receive the pending quantity from here. `New cylinders` increases total stock. `Replace cylinder` moves empty cylinders into full cylinders without increasing total stock.
                         </div>
                         <div className="flex justify-end">
                           <button type="submit" className="rounded-xl bg-success px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-success/20 transition hover:bg-success/90">

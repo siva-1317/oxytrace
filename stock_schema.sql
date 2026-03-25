@@ -43,6 +43,7 @@ create table stock_order_items (
   order_id uuid references stock_orders(id) on delete cascade,
   cylinder_size text not null,        -- 'B-type 10L' | 'D-type 46L' | 'Jumbo 47L' etc.
   gas_type text default 'oxygen',     -- 'oxygen' | 'medical_air' | 'nitrous_oxide'
+  stock_mode text default 'replace_cylinder', -- 'new_cylinders' | 'replace_cylinder'
   quantity_ordered int default 0,
   quantity_received int default 0,
   unit_price numeric(10,2) default 0,

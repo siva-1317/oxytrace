@@ -1,6 +1,10 @@
 ﻿import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
+import { filterRowsByPlacedSourceId } from '../utils/workspaceScope.js';
+import { normalizeTelemetryRow } from '../utils/telemetryNormalize.js';
+import { buildTelemetryDeviceMap, canonicalizeDeviceKey, deviceKeysMatch } from '../utils/deviceMatch.js';
+import { shapeCylinderRow } from '../utils/cylinderShape.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -15,11 +19,11 @@ function toCsv(rows) {
     if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };
-  const header = ['cylinder_id', 'cylinder_name', 'ward', 'avg_gas_level_pct', 'avg_leakage_ppm', 'avg_daily_use_kg'];
+  const header = ['cylinder_id', 'cylinder_num', 'ward', 'avg_gas_level_pct', 'avg_leakage_ppm', 'avg_daily_use_kg'];
   const lines = [header.join(',')];
   for (const r of rows) {
     lines.push(
-      [r.cylinder_id, r.cylinder_name, r.ward, r.avg_gas_level_pct, r.avg_leakage_ppm, r.avg_daily_use_kg]
+      [r.cylinder_id, r.cylinder_num, r.ward, r.avg_gas_level_pct, r.avg_leakage_ppm, r.avg_daily_use_kg]
         .map(esc)
         .join(',')
     );
@@ -30,24 +34,26 @@ function toCsv(rows) {
 async function fetchCylindersWithLatest() {
   const { data: cylinders, error } = await supabaseAdmin
     .from('cylinders')
-    .select('id, cylinder_name, ward, location, esp32_device_id, is_active, refill_threshold_pct, created_at')
+    .select('id, cylinder_num, ward, floor, device_id, is_active, created_at')
     .order('created_at', { ascending: false });
   if (error) throw new Error(error.message);
 
-  const cylList = cylinders || [];
-  const cylIds = cylList.map((c) => c.id);
-
+  const cylList = (await filterRowsByPlacedSourceId('cylinder', cylinders || [])).map(shapeCylinderRow);
   const latestByCylinderId = new Map();
-  if (cylIds.length) {
+  const deviceCanonicals = Array.from(
+    new Set(cylList.map((c) => canonicalizeDeviceKey(c.esp32_device_id)).filter(Boolean))
+  );
+  if (deviceCanonicals.length) {
     const { data: readings, error: rErr } = await supabaseAdmin
-      .from('sensor_readings')
-      .select('id, cylinder_id, esp32_device_id, gas_weight_kg, leakage_ppm, valve_open, gas_level_pct, created_at')
-      .in('cylinder_id', cylIds)
+      .from('iot_telemetry')
+      .select('*')
       .order('created_at', { ascending: false })
       .limit(5000);
     if (rErr) throw new Error(rErr.message);
-    for (const r of readings || []) {
-      if (!latestByCylinderId.has(r.cylinder_id)) latestByCylinderId.set(r.cylinder_id, r);
+    const byDevice = buildTelemetryDeviceMap((readings || []).map((row) => normalizeTelemetryRow(row)));
+    for (const cyl of cylList) {
+      const key = canonicalizeDeviceKey(cyl.esp32_device_id);
+      if (key && byDevice.has(key)) latestByCylinderId.set(cyl.id, byDevice.get(key));
     }
   }
 
@@ -105,14 +111,20 @@ async function computeAnalyticsRange(from, to) {
   const fromIso = new Date(from + 'T00:00:00.000Z').toISOString();
   const toIso = new Date(to + 'T23:59:59.999Z').toISOString();
 
-  const { data: readings, error: rErr } = await supabaseAdmin
-    .from('sensor_readings')
-    .select('cylinder_id, gas_weight_kg, gas_level_pct, leakage_ppm, created_at')
+  const { data: telemetry, error: rErr } = await supabaseAdmin
+    .from('iot_telemetry')
+    .select('*')
     .gte('created_at', fromIso)
     .lte('created_at', toIso)
     .order('created_at', { ascending: false })
     .limit(5000);
   if (rErr) throw new Error(rErr.message);
+
+  const readings = (telemetry || []).map((row) => {
+    const reading = normalizeTelemetryRow(row);
+    const cylinder = cylinders.find((c) => deviceKeysMatch(c.esp32_device_id, reading.device_id || reading.esp32_device_id));
+    return cylinder ? { ...reading, cylinder_id: cylinder.id } : null;
+  }).filter(Boolean);
 
   const days = buildDays(from, to);
   const { dayTotals, wardTotals, byCyl } = computeUsage(readings || [], cylMap);
@@ -126,15 +138,15 @@ async function computeAnalyticsRange(from, to) {
     .slice()
     .sort((a, b) => (b.latest_reading?.gas_level_pct ?? 0) - (a.latest_reading?.gas_level_pct ?? 0))
     .slice(0, 6);
-  const levelKeys = top.map((c) => c.cylinder_name);
+  const levelKeys = top.map((c) => c.cylinder_num || c.cylinder_name);
 
   const byDayCyl = new Map();
   for (const r of readings || []) {
     const c = cylMap.get(r.cylinder_id);
     if (!c) continue;
-    if (!levelKeys.includes(c.cylinder_name)) continue;
+    if (!levelKeys.includes(c.cylinder_num || c.cylinder_name)) continue;
     const dk = dayKey(r.created_at);
-    const key = `${dk}::${c.cylinder_name}`;
+    const key = `${dk}::${c.cylinder_num || c.cylinder_name}`;
     const cur = byDayCyl.get(key) || { sum: 0, n: 0 };
     cur.sum += Number(r.gas_level_pct ?? 0);
     cur.n += 1;
@@ -212,7 +224,7 @@ async function computeAnalyticsRange(from, to) {
 
     return {
       cylinder_id: c.id,
-      cylinder_name: c.cylinder_name,
+      cylinder_num: c.cylinder_num || c.cylinder_name,
       ward: c.ward,
       avg_gas_level_pct: avgGas,
       avg_leakage_ppm: avgPpm,
@@ -252,13 +264,19 @@ router.get('/summary', async (_req, res, next) => {
       .eq('severity', 'critical');
 
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { data: readings, error: rErr } = await supabaseAdmin
-      .from('sensor_readings')
-      .select('cylinder_id, gas_weight_kg, created_at')
+    const { data: telemetry, error: rErr } = await supabaseAdmin
+      .from('iot_telemetry')
+      .select('*')
       .gte('created_at', since)
       .order('created_at', { ascending: false })
       .limit(5000);
     if (rErr) throw new Error(rErr.message);
+
+    const readings = (telemetry || []).map((row) => {
+      const deviceKey = String(row?.device_id || '').trim();
+      const cylinder = cylinders.find((c) => deviceKeysMatch(c.esp32_device_id, deviceKey));
+      return cylinder ? { ...normalizeTelemetryRow(row, cylinder), cylinder_id: cylinder.id } : null;
+    }).filter(Boolean);
 
     const cylMap = new Map(cylinders.map((c) => [c.id, c]));
     const { dayTotals } = computeUsage(readings || [], cylMap);

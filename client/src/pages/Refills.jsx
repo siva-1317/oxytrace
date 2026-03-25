@@ -78,7 +78,7 @@ export default function Refills() {
     const list = cylinders
       .map((c) => ({
         id: c.id,
-        name: c.cylinder_name,
+        name: c.cylinder_num || c.cylinder_name,
         ward: c.ward,
         pct: Number(c.latest_reading?.gas_level_pct ?? 0)
       }))
@@ -95,7 +95,7 @@ export default function Refills() {
     const totalKg = thisMonth.reduce((a, r) => a + Math.max(0, Number(r.new_weight_kg || 0) - Number(r.previous_weight_kg || 0)), 0);
     const byCyl = new Map();
     for (const r of thisMonth) {
-      const k = r.cylinder?.cylinder_name || r.cylinder_name || 'Unknown';
+      const k = r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || r.cylinder_num || r.cylinder_name || 'Unknown';
       byCyl.set(k, (byCyl.get(k) || 0) + 1);
     }
     const most = Array.from(byCyl.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || '—';
@@ -105,7 +105,7 @@ export default function Refills() {
   const perCylinder = useMemo(() => {
     const map = new Map();
     for (const r of history) {
-      const k = r.cylinder?.cylinder_name || r.cylinder_name || 'Unknown';
+      const k = r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || r.cylinder_num || r.cylinder_name || 'Unknown';
       map.set(k, (map.get(k) || 0) + 1);
     }
     return Array.from(map.entries())
@@ -252,7 +252,7 @@ export default function Refills() {
             <tbody className="divide-y divide-border/30">
               {history.map((r) => (
                 <tr key={r.id} className="hover:bg-accent/5 transition group">
-                  <td className="px-5 py-4 font-medium text-text">{r.cylinder?.cylinder_name || r.cylinder_name}</td>
+                  <td className="px-5 py-4 font-medium text-text">{r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || r.cylinder_num || r.cylinder_name}</td>
                   <td className="px-5 py-4 text-muted">{r.cylinder?.ward || r.ward}</td>
                   <td className="px-5 py-4 text-muted">{formatDateTime(r.refill_date)}</td>
                   <td className="px-5 py-4 font-mono">{Number(r.previous_weight_kg ?? 0).toFixed(1)}</td>
@@ -280,7 +280,7 @@ export default function Refills() {
               <option value="">Select…</option>
               {cylinders.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.cylinder_name} · {c.ward}
+                  {c.cylinder_num || c.cylinder_name} · {c.ward}
                 </option>
               ))}
             </select>

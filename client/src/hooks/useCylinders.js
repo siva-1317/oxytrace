@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext.jsx';
 import { apiJson, getCachedData, setCachedData } from '../lib/api.js';
+import { normalizeTelemetryRow } from '../lib/telemetry.js';
 import { useRealtime } from './useRealtime.js';
 
 const CYLINDERS_CACHE_KEY = '/api/cylinders';
@@ -37,9 +38,29 @@ export function useCylinders() {
   useRealtime(
     (reading) => {
       setCylinders((prev) => {
+        const normalizedReading = normalizeTelemetryRow(reading);
+        const readingDeviceId = normalizedReading?.device_id || normalizedReading?.esp32_device_id || null;
+        const matchedCylinder = prev.find(
+          (c) => c.id === reading.cylinder_id || c.device_id === readingDeviceId
+        );
+        console.debug('[useCylinders] incoming telemetry for card update', {
+          reading: normalizedReading,
+          readingDeviceId,
+          matchedCylinderId: matchedCylinder?.id || null,
+          matchedCylinderName: matchedCylinder?.cylinder_name || null
+        });
+
         const next = prev.map((c) =>
-          c.esp32_device_id === reading.esp32_device_id
-            ? { ...c, latest_reading: reading, _livePulseAt: Date.now() }
+          c.id === reading.cylinder_id || c.device_id === readingDeviceId
+            ? {
+                ...c,
+                weight: normalizedReading?.gas_weight_kg ?? normalizedReading?.current_weight ?? null,
+                valve_pos: normalizedReading?.valve_position ?? null,
+                leak_detect: normalizedReading?.leak_detect ?? null,
+                timestamp: normalizedReading?.created_at ?? null,
+                latest_reading: normalizedReading,
+                _livePulseAt: Date.now()
+              }
             : c
         );
         setCachedData(CYLINDERS_CACHE_KEY, { cylinders: next });
@@ -50,7 +71,7 @@ export function useCylinders() {
       toast(`New alert: ${alert.alert_type}`);
       setCylinders((prev) => {
         const next = prev.map((c) =>
-          c.esp32_device_id === alert.esp32_device_id ? { ...c, _hasAlert: true } : c
+          c.id === alert.cylinder_id || c.esp32_device_id === alert.esp32_device_id ? { ...c, _hasAlert: true } : c
         );
         setCachedData(CYLINDERS_CACHE_KEY, { cylinders: next });
         return next;

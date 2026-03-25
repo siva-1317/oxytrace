@@ -315,7 +315,7 @@ export function downloadAnalyticsReportPdf({ from, to, data, aiReport }) {
         title: 'Cylinder Performance Table',
         body: renderTable(
           [
-            { label: 'Cylinder', key: 'cylinder_name' },
+            { label: 'Cylinder', key: 'cylinder_num' },
             { label: 'Ward', key: 'ward' },
             { label: 'Avg Gas %', render: (row) => formatNumber(row.avg_gas_level_pct, 1) },
             { label: 'Avg Leakage ppm', render: (row) => formatNumber(row.avg_leakage_ppm, 0) },
@@ -357,7 +357,7 @@ export function downloadRefillsReportPdf({ history, upcoming, stats, perCylinder
         title: 'Refill History',
         body: renderTable(
           [
-            { label: 'Cylinder', render: (row) => row.cylinder?.cylinder_name || row.cylinder_name || '-' },
+            { label: 'Cylinder', render: (row) => row.cylinder?.cylinder_num || row.cylinder?.cylinder_name || row.cylinder_num || row.cylinder_name || '-' },
             { label: 'Ward', render: (row) => row.cylinder?.ward || row.ward || '-' },
             { label: 'Date', render: (row) => formatDateTime(row.refill_date) },
             { label: 'Prev kg', render: (row) => formatNumber(row.previous_weight_kg, 1) },
@@ -393,7 +393,7 @@ export function downloadAlertsReportPdf({ alerts, filtered, stats, tab }) {
           ${renderDonutChart(severityRows, { labelKey: 'name', valueKey: 'value', title: 'Severity Mix' })}
           ${renderTable(
             [
-              { label: 'Cylinder', render: (row) => row.cylinder?.cylinder_name || row.cylinder_name || row.esp32_device_id },
+              { label: 'Cylinder', render: (row) => row.cylinder?.cylinder_num || row.cylinder?.cylinder_name || row.cylinder_num || row.cylinder_name || row.esp32_device_id },
               { label: 'Ward', render: (row) => row.cylinder?.ward || row.ward || '-' },
               { label: 'Type', key: 'alert_type' },
               { label: 'Severity', key: 'severity' }
@@ -407,7 +407,7 @@ export function downloadAlertsReportPdf({ alerts, filtered, stats, tab }) {
         body: renderTable(
           [
             { label: 'Time', render: (row) => formatDateTime(row.created_at) },
-            { label: 'Cylinder', render: (row) => row.cylinder?.cylinder_name || row.cylinder_name || row.esp32_device_id },
+            { label: 'Cylinder', render: (row) => row.cylinder?.cylinder_num || row.cylinder?.cylinder_name || row.cylinder_num || row.cylinder_name || row.esp32_device_id },
             { label: 'Message', key: 'message' },
             { label: 'Severity', key: 'severity' }
           ],
@@ -455,7 +455,7 @@ export function downloadCylindersReportPdf({ cylinders, filters }) {
         title: 'Cylinder Table',
         body: renderTable(
           [
-            { label: 'Cylinder', key: 'cylinder_name' },
+            { label: 'Cylinder', key: 'cylinder_num' },
             { label: 'Ward', key: 'ward' },
             { label: 'Location', key: 'location' },
             { label: 'Gas %', render: (row) => formatNumber(row.latest_reading?.gas_level_pct, 1) },
@@ -471,7 +471,7 @@ export function downloadCylindersReportPdf({ cylinders, filters }) {
 
 export function downloadCylinderDetailReportPdf({ detail, refills, lineSeries, dailyUsage, range }) {
   openPrintableReport({
-    title: `Cylinder Report - ${detail?.cylinder_name || 'Cylinder'}`,
+    title: `Cylinder Report - ${detail?.cylinder_num || detail?.cylinder_name || 'Cylinder'}`,
     subtitle: `Detailed telemetry and refill view for range ${range}`,
     stats: [
       { label: 'Ward', value: detail?.ward || '-' },

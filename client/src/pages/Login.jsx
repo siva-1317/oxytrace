@@ -56,7 +56,7 @@ export default function Login() {
           >
             Sign in with Google
           </button>
-          <div className="mt-4 text-center text-xs text-muted">Uses Supabase Google OAuth.</div>
+          <div className="mt-4 text-center text-xs text-muted">use mail id to login</div>
         </div>
       </div>
     </div>

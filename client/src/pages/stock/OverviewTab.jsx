@@ -9,11 +9,13 @@ import { useAuth } from '../../context/AuthContext';
 import { apiJson, formatDateTime } from '../../lib/api';
 import CountUp from 'react-countup';
 import { StockOverviewShell } from '../../components/DashboardPageLoader.jsx';
+import { useThresholdSettings } from '../../hooks/useThresholdSettings.js';
 
 const COLORS = ['#00B4D8', '#48CAE4', '#90E0EF', '#ADE8F4', '#CAF0F8'];
 
 export default function OverviewTab() {
-  const { data, loading, refetch } = useStockOverview();
+  const { data, loading } = useStockOverview();
+  const thresholds = useThresholdSettings();
   const { accessToken } = useAuth();
   const [aiReport, setAiReport] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -42,9 +44,14 @@ export default function OverviewTab() {
   }
 
   const { kpis, inventory, upcoming_deliveries, recent_orders, monthly_spend, supplier_spend } = data || {};
+  const oxygenInventory = (inventory || []).filter((inv) => (inv.gas_type || 'oxygen') === 'oxygen');
 
   return (
     <div className="space-y-6">
+      <div className="rounded-2xl border border-border/50 bg-surface/70 px-4 py-3 text-xs text-muted shadow-sm backdrop-blur">
+        Cylinder alert settings: gas {thresholds.low_gas_pct}% / {thresholds.danger_gas_pct}% | leakage {thresholds.leak_warn_ppm} / {thresholds.leak_danger_ppm} ppm | weight {thresholds.low_weight_kg} / {thresholds.danger_weight_kg} kg
+      </div>
+
       {/* KPIs */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-accent">
@@ -104,9 +111,9 @@ export default function OverviewTab() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         {/* Visual Inventory */}
         <div className="xl:col-span-2 space-y-4">
-          <h2 className="text-lg font-semibold text-text">Stock Levels</h2>
+          <h2 className="text-lg font-semibold text-text">Oxygen Stock Levels</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {inventory?.map((inv, i) => {
+            {oxygenInventory.map((inv, i) => {
               const total = inv.quantity_full + inv.quantity_in_use + inv.quantity_empty + inv.quantity_damaged;
               const pFull = total ? (inv.quantity_full / total) * 100 : 0;
               const pInUse = total ? (inv.quantity_in_use / total) * 100 : 0;
@@ -124,9 +131,6 @@ export default function OverviewTab() {
                   <div className="flex justify-between items-center mb-2">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-text">{inv.cylinder_size}</span>
-                      <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-xs text-accent">
-                        {inv.gas_type}
-                      </span>
                     </div>
                     {inv.quantity_full < inv.reorder_level && (
                       <AlertCircle size={16} className="text-warning" />
@@ -147,7 +151,7 @@ export default function OverviewTab() {
                 </motion.div>
               );
             })}
-            {!inventory?.length && (
+            {!oxygenInventory.length && (
               <div className="col-span-2 text-center text-sm text-muted py-8">No inventory items found.</div>
             )}
           </div>

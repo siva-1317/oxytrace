@@ -19,10 +19,12 @@ import {
 import { useAuth } from '../context/AuthContext.jsx';
 import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
 import { supabase } from '../lib/supabaseClient.js';
+import { normalizeTelemetryRow } from '../lib/telemetry.js';
 import AIAnalysisPanel from '../components/AIAnalysisPanel.jsx';
 import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
 import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
 import { downloadCylinderDetailReportPdf } from '../lib/reportPrint.js';
+import { useThresholdSettings } from '../hooks/useThresholdSettings.js';
 
 function Modal({ open, title, children, onClose }) {
   if (!open) return null;
@@ -58,6 +60,7 @@ function TooltipBox({ active, payload, label }) {
 export default function CylinderDetail() {
   const { id } = useParams();
   const { accessToken } = useAuth();
+  const thresholds = useThresholdSettings();
   const detailCacheKey = `/api/cylinders/${id}`;
   const [detail, setDetail] = useState(() => getCachedData(detailCacheKey)?.cylinder || null);
   const [readings, setReadings] = useState(() => getCachedData(`/api/readings/${id}?range=1d`)?.readings || []);
@@ -142,9 +145,13 @@ export default function CylinderDetail() {
       .channel(`cylinder-${id}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'sensor_readings', filter: `cylinder_id=eq.${id}` },
+        { event: 'INSERT', schema: 'public', table: 'iot_telemetry', filter: `device_id=eq.${detail.esp32_device_id}` },
         (payload) => {
-          const newReading = payload.new;
+          const newReading = normalizeTelemetryRow(payload.new);
+          console.debug('[CylinderDetail] iot_telemetry insert', {
+            raw: payload.new,
+            normalized: newReading
+          });
           // Update the gauge/latest reading
           setDetail((prev) => ({
             ...prev,
@@ -209,18 +216,21 @@ export default function CylinderDetail() {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-      <div className="space-y-6 xl:col-span-1">
-        <div className="rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-lg font-semibold">{detail.cylinder_name}</div>
-              <div className="text-xs text-muted">
-                {detail.ward} · {detail.location} · {detail.esp32_device_id}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <ReportDownloadButton onGenerate={() => downloadCylinderDetailReportPdf({ detail, refills, lineSeries, dailyUsage, range })} />
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 rounded-2xl border border-border/50 bg-surface/80 px-4 py-3 shadow-sm backdrop-blur">
+        <div>
+          <div className="text-lg font-semibold">{detail.cylinder_num || detail.cylinder_name}</div>
+          <div className="text-xs text-muted">
+            {detail.ward} ? {detail.floor || detail.floor_name || detail.location} ? {detail.device_id || detail.esp32_device_id}
+          </div>
+        </div>
+        <ReportDownloadButton onGenerate={() => downloadCylinderDetailReportPdf({ detail, refills, lineSeries, dailyUsage, range })} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <div className="space-y-6 xl:col-span-1">
+          <div className="rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur">
+            <div className="flex items-center justify-end">
               <button
                 onClick={toggleValve}
                 className="rounded-xl border border-border/50 bg-surface px-4 py-2 text-sm font-medium transition hover:border-accent hover:text-accent shadow-sm"
@@ -228,45 +238,45 @@ export default function CylinderDetail() {
                 Toggle valve
               </button>
             </div>
-          </div>
 
-          <div className="mt-4 grid grid-cols-1 gap-4">
-            <div className="h-44">
-              <ResponsiveContainer width="100%" height="100%">
-                <RadialBarChart cx="50%" cy="60%" innerRadius="70%" outerRadius="95%" barSize={12} data={gauge} startAngle={180} endAngle={0}>
-                  <RadialBar dataKey="value" cornerRadius={12} />
-                </RadialBarChart>
-              </ResponsiveContainer>
-              <div className="-mt-10 text-center">
-                <div className="font-mono text-3xl font-semibold">{gasPct.toFixed(1)}%</div>
-                <div className="text-xs text-muted">Gas level</div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-xl border border-border/50 bg-card/30 p-2">
-                <div className="text-xs text-muted">Weight</div>
-                <div className="mt-1 font-mono text-sm">{Number(latest.gas_weight_kg ?? 0).toFixed(1)} kg</div>
-              </div>
-              <div className="rounded-xl border border-border/50 bg-card/30 p-2">
-                <div className="text-xs text-muted">Leakage</div>
-                <div className="mt-1 font-mono text-sm">{Number(latest.leakage_ppm ?? 0).toFixed(0)} ppm</div>
-              </div>
-              <div className="rounded-xl border border-border/50 bg-card/30 p-2">
-                <div className="text-xs text-muted">Valve</div>
-                <div className={latest.valve_open ? 'mt-1 text-sm text-success' : 'mt-1 text-sm text-danger'}>
-                  {latest.valve_open ? 'OPEN' : 'CLOSED'}
+            <div className="mt-4 grid grid-cols-1 gap-4">
+              <div className="h-44">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RadialBarChart cx="50%" cy="60%" innerRadius="70%" outerRadius="95%" barSize={12} data={gauge} startAngle={180} endAngle={0}>
+                    <RadialBar dataKey="value" cornerRadius={12} />
+                  </RadialBarChart>
+                </ResponsiveContainer>
+                <div className="-mt-10 text-center">
+                  <div className="font-mono text-3xl font-semibold">{gasPct.toFixed(1)}%</div>
+                  <div className="text-xs text-muted">Gas level</div>
                 </div>
               </div>
-            </div>
 
-            <div className="rounded-xl border border-border/50 bg-card/30 p-3 text-sm text-muted">
-              Prediction: ~{Math.max(0, Math.round((gasPct / 100) * 21))} days remaining (heuristic)
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-xl border border-border/50 bg-card/30 p-2">
+                  <div className="text-xs text-muted">Weight</div>
+                  <div className="mt-1 font-mono text-sm">{Number(latest.gas_weight_kg ?? 0).toFixed(1)} kg</div>
+                </div>
+                <div className="rounded-xl border border-border/50 bg-card/30 p-2">
+                  <div className="text-xs text-muted">Leakage</div>
+                  <div className="mt-1 font-mono text-sm">{Number(latest.leakage_ppm ?? 0).toFixed(0)} ppm</div>
+                </div>
+                <div className="rounded-xl border border-border/50 bg-card/30 p-2">
+                  <div className="text-xs text-muted">Valve</div>
+                  <div className={latest.valve_open ? 'mt-1 text-sm text-success' : 'mt-1 text-sm text-danger'}>
+                    {latest.valve_open ? 'OPEN' : 'CLOSED'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-border/50 bg-card/30 p-3 text-sm text-muted">
+                Prediction: ~{Math.max(0, Math.round((gasPct / 100) * 21))} days remaining (heuristic)
+                <div className="mt-2 text-xs">Gas alert levels: warning {thresholds.low_gas_pct}% | critical {thresholds.danger_gas_pct}% | weight warning {thresholds.low_weight_kg} kg</div>
+              </div>
             </div>
           </div>
-        </div>
 
-        <AIAnalysisPanel cylinderId={id} />
+          <AIAnalysisPanel cylinderId={id} />
 
         <div className="rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur">
           <div className="flex items-center justify-between">
@@ -361,14 +371,17 @@ export default function CylinderDetail() {
                   <XAxis dataKey="t" tick={{ fill: 'rgba(100,116,139,0.9)', fontSize: 10 }} hide />
                   <YAxis tick={{ fill: 'rgba(100,116,139,0.9)', fontSize: 11 }} />
                   <Tooltip content={<TooltipBox />} />
-                  <ReferenceLine y={200} stroke="rgba(255,82,82,0.7)" strokeDasharray="4 4" />
+                  <ReferenceLine y={thresholds.leak_warn_ppm} stroke="rgba(245,158,11,0.7)" strokeDasharray="4 4" />
+                  <ReferenceLine y={thresholds.leak_danger_ppm} stroke="rgba(255,82,82,0.7)" strokeDasharray="4 4" />
                   <Line type="monotone" dataKey="ppm" name="Leakage (ppm)" stroke="rgba(255,160,0,0.85)" dot={false} animationDuration={800} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            <div className="mt-2 text-xs text-muted">Danger threshold: 200ppm</div>
+            <div className="mt-2 text-xs text-muted">Leak thresholds: warning {thresholds.leak_warn_ppm} ppm | danger {thresholds.leak_danger_ppm} ppm</div>
           </div>
         </div>
+      </div>
+
       </div>
 
       <Modal open={openRefill} title="Log refill" onClose={() => setOpenRefill(false)}>
@@ -410,4 +423,5 @@ export default function CylinderDetail() {
     </div>
   );
 }
+
 

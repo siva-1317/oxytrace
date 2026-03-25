@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
 
@@ -17,7 +17,7 @@ function toCsv(rows) {
     lines.push(
       [
         r.id,
-        r.cylinder?.cylinder_name || '',
+        r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || '',
         r.cylinder?.ward || '',
         r.refill_date,
         r.previous_weight_kg,
@@ -34,7 +34,7 @@ router.get('/', async (_req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('refill_history')
-      .select('*, cylinders (cylinder_name, ward, location)')
+      .select('*, cylinders (cylinder_name, cylinder_num, ward, floor)')
       .order('refill_date', { ascending: false })
       .limit(2000);
     if (error) throw new Error(error.message);
@@ -54,7 +54,7 @@ router.get('/export', async (_req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('refill_history')
-      .select('*, cylinders (cylinder_name, ward)')
+      .select('*, cylinders (cylinder_name, cylinder_num, ward)')
       .order('refill_date', { ascending: false })
       .limit(5000);
     if (error) throw new Error(error.message);
@@ -84,11 +84,6 @@ router.post('/', async (req, res, next) => {
 
     const { data, error } = await supabaseAdmin.from('refill_history').insert(payload).select('*').single();
     if (error) throw new Error(error.message);
-
-    await supabaseAdmin
-      .from('cylinders')
-      .update({ last_refill_date: new Date().toISOString().slice(0, 10) })
-      .eq('id', payload.cylinder_id);
 
     res.status(201).json({ refill: data });
   } catch (e) {

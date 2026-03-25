@@ -1,299 +1,485 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { apiJson, formatDateTime, getCachedData } from '../../lib/api';
-import { Plus, ArrowRightLeft, ShieldAlert, CheckCircle, Package, ArrowDownLeft, X } from 'lucide-react';
+import { Package, Truck, RefreshCcw, Layers3 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
 import { StockTableShell } from '../../components/DashboardPageLoader.jsx';
+import { useThresholdSettings } from '../../hooks/useThresholdSettings.js';
+
+function formatDayLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short' }).format(date);
+}
+
+function startOfDay(date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function endOfDay(date) {
+  const next = new Date(date);
+  next.setHours(23, 59, 59, 999);
+  return next;
+}
+
+function subtractDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() - days);
+  return next;
+}
+
+function buildPeriodRange(period) {
+  const now = new Date();
+
+  switch (period) {
+    case 'today':
+      return {
+        from: startOfDay(now),
+        to: endOfDay(now)
+      };
+    case '7d':
+      return {
+        from: startOfDay(subtractDays(now, 6)),
+        to: endOfDay(now)
+      };
+    case '30d':
+      return {
+        from: startOfDay(subtractDays(now, 29)),
+        to: endOfDay(now)
+      };
+    case '90d':
+      return {
+        from: startOfDay(subtractDays(now, 89)),
+        to: endOfDay(now)
+      };
+    default:
+      return {
+        from: startOfDay(subtractDays(now, 6)),
+        to: endOfDay(now)
+      };
+  }
+}
+
+function sumTransactions(rows, type) {
+  return rows
+    .filter((row) => row.transaction_type === type)
+    .reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+}
+
+function StatCard({ icon: Icon, label, value, tone = 'accent', helper }) {
+  const toneMap = {
+    accent: 'bg-accent/10 text-accent',
+    success: 'bg-success/10 text-success',
+    warning: 'bg-warning/10 text-warning',
+    muted: 'bg-surface text-text'
+  };
+
+  return (
+    <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted">{label}</div>
+          <div className="mt-2 text-3xl font-bold tracking-tight text-text">{value}</div>
+          {helper ? <div className="mt-1 text-xs text-muted">{helper}</div> : null}
+        </div>
+        <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${toneMap[tone] || toneMap.accent}`}>
+          <Icon size={18} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({ full, reorder }) {
+  if (Number(full || 0) === 0) {
+    return <span className="rounded-full bg-danger/15 px-2.5 py-1 text-[10px] font-bold uppercase text-danger">Out</span>;
+  }
+  if (Number(full || 0) < Number(reorder || 0)) {
+    return <span className="rounded-full bg-warning/15 px-2.5 py-1 text-[10px] font-bold uppercase text-warning">Low</span>;
+  }
+  return <span className="rounded-full bg-success/15 px-2.5 py-1 text-[10px] font-bold uppercase text-success">Good</span>;
+}
 
 export default function InventoryTab() {
   const { accessToken } = useAuth();
-  const cacheKey = '/api/stock/inventory';
-  const [inventory, setInventory] = useState(() => getCachedData(cacheKey)?.inventory || []);
-  const [loading, setLoading] = useState(() => !getCachedData(cacheKey));
+  const thresholds = useThresholdSettings();
+  const inventoryCacheKey = '/api/stock/inventory';
 
-  // Modals state
-  const [activeInv, setActiveInv] = useState(null);
-  const [showAdjust, setShowAdjust] = useState(false);
-  const [showIssueReturn, setShowIssueReturn] = useState(false);
-  const [irMode, setIrMode] = useState('issue'); // 'issue' or 'return'
+  const [inventory, setInventory] = useState(() => getCachedData(inventoryCacheKey)?.inventory || []);
+  const [transactions, setTransactions] = useState([]);
+  const [loading, setLoading] = useState(() => !getCachedData(inventoryCacheKey));
+  const [txLoading, setTxLoading] = useState(false);
+  const [cylinderFilter, setCylinderFilter] = useState('all');
+  const [period, setPeriod] = useState('7d');
 
-  // Adjust Form
-  const [adjustForm, setAdjustForm] = useState({ bucket: 'full', mode: 'add', quantity: 1, notes: '' });
-
-  // Issue/Return Form
-  const [irForm, setIrForm] = useState({ ward: '', quantity: 1, condition: 'good' });
+  const range = useMemo(() => buildPeriodRange(period), [period]);
 
   const fetchInventory = async () => {
-    if (!getCachedData(cacheKey)) setLoading(true);
+    if (!getCachedData(inventoryCacheKey)) setLoading(true);
     try {
-      const res = await apiJson('/api/stock/inventory', { token: accessToken, cacheKey });
+      const res = await apiJson('/api/stock/inventory', { token: accessToken, cacheKey: inventoryCacheKey });
       setInventory(res.inventory || []);
-    } catch (err) {
+    } catch {
       toast.error('Failed to load inventory');
     } finally {
       setLoading(false);
     }
   };
 
+  const fetchTransactions = async () => {
+    setTxLoading(true);
+    try {
+      const params = new URLSearchParams({
+        limit: '2000',
+        from: range.from.toISOString(),
+        to: range.to.toISOString()
+      });
+      const res = await apiJson(`/api/stock/transactions?${params.toString()}`, { token: accessToken });
+      setTransactions(res.transactions || []);
+    } catch {
+      toast.error('Failed to load inventory activity');
+    } finally {
+      setTxLoading(false);
+    }
+  };
+
   useEffect(() => {
-    if (accessToken) fetchInventory();
+    if (!accessToken) return;
+    fetchInventory();
   }, [accessToken]);
 
-  const StatusPill = ({ full, reorder }) => {
-    if (full === 0) return <span className="bg-danger/20 text-danger px-2 py-1 flex items-center gap-1 rounded-full text-[10px] uppercase font-bold"><ShieldAlert size={12}/> Critical</span>;
-    if (full < reorder) return <span className="bg-warning/20 text-warning flex items-center gap-1 px-2 py-1 rounded-full text-[10px] uppercase font-bold"><ShieldAlert size={12}/> Low Stock</span>;
-    return <span className="bg-success/20 text-success flex items-center gap-1 px-2 py-1 rounded-full text-[10px] uppercase font-bold"><CheckCircle size={12}/> OK</span>;
-  };
+  useEffect(() => {
+    if (!accessToken) return;
+    fetchTransactions();
+  }, [accessToken, range.from, range.to]);
 
-  const formatCurrency = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(val || 0);
+  const oxygenInventory = useMemo(() => {
+    return inventory.filter((row) => (row.gas_type || 'oxygen') === 'oxygen');
+  }, [inventory]);
 
-  // Action Handlers
-  const handleAdjustSubmit = async (e) => {
-    e.preventDefault();
-    try {
-      await apiJson('/api/stock/inventory/adjust', {
-        method: 'POST',
-        token: accessToken,
-        queueOffline: true,
-        body: {
-          cylinder_size: activeInv.cylinder_size,
-          gas_type: activeInv.gas_type,
-          ...adjustForm
-        }
+  const oxygenTransactions = useMemo(() => {
+    return transactions.filter((row) => (row.gas_type || 'oxygen') === 'oxygen');
+  }, [transactions]);
+
+  const cylinderTypes = useMemo(() => {
+    return Array.from(new Set(oxygenInventory.map((row) => row.cylinder_size))).sort((a, b) =>
+      a.localeCompare(b)
+    );
+  }, [oxygenInventory]);
+
+  const filteredInventory = useMemo(() => {
+    return oxygenInventory.filter((row) => cylinderFilter === 'all' || row.cylinder_size === cylinderFilter);
+  }, [oxygenInventory, cylinderFilter]);
+
+  const filteredTransactions = useMemo(() => {
+    return oxygenTransactions.filter(
+      (row) => cylinderFilter === 'all' || row.cylinder_size === cylinderFilter
+    );
+  }, [oxygenTransactions, cylinderFilter]);
+
+  const todayRange = useMemo(() => {
+    const now = new Date();
+    return {
+      from: startOfDay(now),
+      to: endOfDay(now)
+    };
+  }, []);
+
+  const todayTransactions = useMemo(() => {
+    return oxygenTransactions.filter((row) => {
+      const createdAt = new Date(row.created_at);
+      return createdAt >= todayRange.from && createdAt <= todayRange.to;
+    });
+  }, [oxygenTransactions, todayRange.from, todayRange.to]);
+
+  const inventorySummary = useMemo(() => {
+    return filteredInventory.reduce(
+      (acc, row) => {
+        acc.total +=
+          Number(row.quantity_full || 0) +
+          Number(row.quantity_in_use || 0) +
+          Number(row.quantity_empty || 0) +
+          Number(row.quantity_damaged || 0);
+        acc.full += Number(row.quantity_full || 0);
+        acc.empty += Number(row.quantity_empty || 0);
+        acc.inUse += Number(row.quantity_in_use || 0);
+        return acc;
+      },
+      { total: 0, full: 0, empty: 0, inUse: 0 }
+    );
+  }, [filteredInventory]);
+
+  const periodSummary = useMemo(() => {
+    return {
+      delivered: sumTransactions(filteredTransactions, 'received'),
+      used: sumTransactions(filteredTransactions, 'issued'),
+      empty: sumTransactions(filteredTransactions, 'returned')
+    };
+  }, [filteredTransactions]);
+
+  const todaySummary = useMemo(() => {
+    const rows = todayTransactions.filter(
+      (row) => cylinderFilter === 'all' || row.cylinder_size === cylinderFilter
+    );
+
+    return {
+      delivered: sumTransactions(rows, 'received'),
+      used: sumTransactions(rows, 'issued'),
+      empty: sumTransactions(rows, 'returned')
+    };
+  }, [todayTransactions, cylinderFilter]);
+
+  const chartData = useMemo(() => {
+    const buckets = new Map();
+    let current = new Date(range.from);
+
+    while (current <= range.to) {
+      const key = current.toISOString().slice(0, 10);
+      buckets.set(key, {
+        day: formatDayLabel(key),
+        delivered: 0,
+        used: 0,
+        empty: 0
       });
-      toast.success('Inventory adjusted');
-      setShowAdjust(false);
-      fetchInventory();
-    } catch (err) {
-      toast.error('Adjustment failed: ' + err.message);
+      current = addOneDay(current);
     }
-  };
 
-  const handleIRSubmit = async (e) => {
-    e.preventDefault();
-    if (!irForm.ward.trim()) return toast.error('Ward is required');
-    try {
-      const endpoint = irMode === 'issue' ? '/api/stock/inventory/issue' : '/api/stock/inventory/return';
-      await apiJson(endpoint, {
-        method: 'POST',
-        token: accessToken,
-        queueOffline: true,
-        body: {
-          cylinder_size: activeInv.cylinder_size,
-          gas_type: activeInv.gas_type,
-          ...irForm
-        }
-      });
-      toast.success(irMode === 'issue' ? 'Cylinders issued to ward' : 'Cylinders returned from ward');
-      setShowIssueReturn(false);
-      fetchInventory();
-    } catch (err) {
-      toast.error('Transaction failed: ' + err.message);
+    for (const row of filteredTransactions) {
+      const key = new Date(row.created_at).toISOString().slice(0, 10);
+      if (!buckets.has(key)) continue;
+      const bucket = buckets.get(key);
+      if (row.transaction_type === 'received') bucket.delivered += Number(row.quantity || 0);
+      if (row.transaction_type === 'issued') bucket.used += Number(row.quantity || 0);
+      if (row.transaction_type === 'returned') bucket.empty += Number(row.quantity || 0);
     }
-  };
 
-  const openIRModal = (inv, mode) => {
-    setActiveInv(inv);
-    setIrMode(mode);
-    setIrForm({ ward: '', quantity: 1, condition: 'good' });
-    setShowIssueReturn(true);
-  };
-
-  const openAdjustModal = (inv) => {
-    setActiveInv(inv);
-    setAdjustForm({ bucket: 'full', mode: 'add', quantity: 1, notes: '' });
-    setShowAdjust(true);
-  };
+    return Array.from(buckets.values());
+  }, [filteredTransactions, range.from, range.to]);
 
   if (loading && !inventory.length) {
-    return <StockTableShell rows={5} columns={8} header={true} topbar={false} />;
+    return <StockTableShell rows={6} columns={7} header={true} topbar={false} />;
   }
 
   return (
-    <div className="space-y-4 relative">
-      <div className="flex justify-between items-center bg-surface/80 p-4 rounded-2xl border border-border/50 shadow-sm backdrop-blur">
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-border/50 bg-surface/70 px-4 py-3 text-xs text-muted shadow-sm backdrop-blur">
+        Cylinder alert settings: gas {thresholds.low_gas_pct}% / {thresholds.danger_gas_pct}% | leakage {thresholds.leak_warn_ppm} / {thresholds.leak_danger_ppm} ppm | weight {thresholds.low_weight_kg} / {thresholds.danger_weight_kg} kg
+      </div>
+      <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-text">Live Inventory</h2>
-          <p className="text-xs text-muted">Current on-hand stock across all status buckets</p>
+          <h2 className="text-lg font-semibold text-text">Oxygen Inventory</h2>
+          <p className="text-xs text-muted">
+            Read-only view of cylinder count, full and empty stock, supplier details, and delivery or usage activity.
+          </p>
         </div>
-        <div className="flex gap-2">
-           <button onClick={() => window.open(import.meta.env.VITE_API_URL + '/api/stock/export/inventory', '_blank')} className="flex items-center gap-2 bg-surface border border-border/50 hover:border-accent hover:text-accent transition px-4 py-2 rounded-xl text-sm font-medium">
-            <Package size={16} /> Export CSV
-          </button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <select
+            value={cylinderFilter}
+            onChange={(e) => setCylinderFilter(e.target.value)}
+            className="rounded-xl border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none transition focus:border-accent"
+          >
+            <option value="all">All cylinder types</option>
+            {cylinderTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </select>
+
+          <div className="flex rounded-xl border border-border/50 bg-background p-1">
+            {[
+              { value: 'today', label: 'Today' },
+              { value: '7d', label: '7 Days' },
+              { value: '30d', label: '30 Days' },
+              { value: '90d', label: '90 Days' }
+            ].map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => setPeriod(item.value)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  period === item.value ? 'bg-accent text-white' : 'text-muted hover:text-text'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          icon={Layers3}
+          label="Cylinder Count"
+          value={inventorySummary.total}
+          helper={cylinderFilter === 'all' ? 'Across all oxygen cylinder types' : cylinderFilter}
+        />
+        <StatCard icon={Package} label="Full Cylinders" value={inventorySummary.full} tone="success" />
+        <StatCard icon={RefreshCcw} label="Empty Cylinders" value={inventorySummary.empty} tone="muted" />
+        <StatCard icon={Truck} label="In Use" value={inventorySummary.inUse} tone="warning" />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.6fr_1fr]">
+        <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-text">Delivery and Usage Trend</h3>
+              <p className="text-xs text-muted">
+                Delivered, used, and empty-returned cylinders for the selected time period.
+              </p>
+            </div>
+            <div className="text-xs text-muted">
+              {txLoading ? 'Refreshing activity...' : `${formatDayLabel(range.from)} to ${formatDayLabel(range.to)}`}
+            </div>
+          </div>
+
+          <div className="mt-4 h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
+                <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                  contentStyle={{
+                    backgroundColor: 'rgba(15,23,42,0.95)',
+                    borderColor: 'rgba(255,255,255,0.08)',
+                    borderRadius: 12,
+                    fontSize: 12
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="delivered" name="Delivered" fill="#10b981" radius={[6, 6, 0, 0]} />
+                <Bar dataKey="used" name="Used" fill="#00b4d8" radius={[6, 6, 0, 0]} />
+                <Bar dataKey="empty" name="Empty" fill="#94a3b8" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
+            <h3 className="text-sm font-semibold text-text">Today</h3>
+            <div className="mt-4 grid grid-cols-1 gap-3">
+              <div className="rounded-xl border border-border/40 bg-background/50 p-3">
+                <div className="text-xs text-muted">Delivered Today</div>
+                <div className="mt-1 text-2xl font-bold text-success">{todaySummary.delivered}</div>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/50 p-3">
+                <div className="text-xs text-muted">Used Today</div>
+                <div className="mt-1 text-2xl font-bold text-accent">{todaySummary.used}</div>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/50 p-3">
+                <div className="text-xs text-muted">Empty Returned Today</div>
+                <div className="mt-1 text-2xl font-bold text-text">{todaySummary.empty}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
+            <h3 className="text-sm font-semibold text-text">Selected Period</h3>
+            <div className="mt-4 grid grid-cols-1 gap-3">
+              <div className="rounded-xl border border-border/40 bg-background/50 p-3">
+                <div className="text-xs text-muted">Delivered</div>
+                <div className="mt-1 text-2xl font-bold text-success">{periodSummary.delivered}</div>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/50 p-3">
+                <div className="text-xs text-muted">Used</div>
+                <div className="mt-1 text-2xl font-bold text-accent">{periodSummary.used}</div>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/50 p-3">
+                <div className="text-xs text-muted">Empty Returned</div>
+                <div className="mt-1 text-2xl font-bold text-text">{periodSummary.empty}</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
       <div className="rounded-2xl border border-border/50 bg-surface/70 shadow-sm backdrop-blur overflow-hidden">
+        <div className="border-b border-border/40 px-5 py-4">
+          <h3 className="text-sm font-semibold text-text">Cylinder and Supplier Details</h3>
+          <p className="mt-1 text-xs text-muted">
+            List of oxygen cylinders with supplier name, latest supplied date, and stock counts.
+          </p>
+        </div>
         <div className="overflow-x-auto custom-scrollbar">
           <table className="w-full text-left text-sm">
             <thead className="bg-surface/50 text-xs uppercase text-muted border-b border-border/50">
               <tr>
                 <th className="px-5 py-4 font-semibold">Cylinder Type</th>
-                <th className="px-5 py-4 font-semibold text-center">Full</th>
-                <th className="px-5 py-4 font-semibold text-center">In Use</th>
-                <th className="px-5 py-4 font-semibold text-center">Empty</th>
-                <th className="px-5 py-4 font-semibold text-center">Damaged</th>
-                <th className="px-5 py-4 font-semibold text-center border-l border-border/20">Total</th>
+                <th className="px-5 py-4 font-semibold">Supplier</th>
+                <th className="px-5 py-4 font-semibold">Supplied Date</th>
+                <th className="px-5 py-4 text-center font-semibold">Full</th>
+                <th className="px-5 py-4 text-center font-semibold">Empty</th>
+                <th className="px-5 py-4 text-center font-semibold">In Use</th>
+                <th className="px-5 py-4 text-center font-semibold">Total</th>
                 <th className="px-5 py-4 font-semibold">Status</th>
-                <th className="px-5 py-4 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {inventory.length > 0 ? (
-                inventory.map((inv) => {
-                  const total = inv.quantity_full + inv.quantity_in_use + inv.quantity_empty + inv.quantity_damaged;
+              {filteredInventory.length ? (
+                filteredInventory.map((row) => {
+                  const total =
+                    Number(row.quantity_full || 0) +
+                    Number(row.quantity_empty || 0) +
+                    Number(row.quantity_in_use || 0) +
+                    Number(row.quantity_damaged || 0);
+
                   return (
-                    <tr key={inv.id} className="hover:bg-accent/5 transition group">
+                    <tr key={row.id} className="transition hover:bg-accent/5">
                       <td className="px-5 py-4">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-text">{inv.cylinder_size}</span>
-                          <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded uppercase font-bold">{inv.gas_type}</span>
+                        <div className="font-semibold text-text">{row.cylinder_size}</div>
+                        <div className="mt-0.5 text-[10px] text-muted">
+                          Updated {formatDateTime(row.last_updated).split(',')[0]}
                         </div>
-                        <div className="text-[10px] text-muted mt-0.5">Updated {formatDateTime(inv.last_updated).split(',')[0]}</div>
-                      </td>
-                      <td className="px-5 py-4 text-center font-bold text-success text-base">{inv.quantity_full}</td>
-                      <td className="px-5 py-4 text-center font-semibold text-accent">{inv.quantity_in_use}</td>
-                      <td className="px-5 py-4 text-center font-medium text-muted">{inv.quantity_empty}</td>
-                      <td className="px-5 py-4 text-center font-medium text-danger">{inv.quantity_damaged}</td>
-                      <td className="px-5 py-4 text-center font-bold text-text border-l border-border/20">{total}</td>
-                      <td className="px-5 py-4">
-                        <StatusPill full={inv.quantity_full} reorder={inv.reorder_level} />
                       </td>
                       <td className="px-5 py-4">
-                        <div className="flex items-center justify-end gap-1.5 opacity-100 transition">
-                          <button onClick={() => openIRModal(inv, 'issue')} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-accent/10 hover:bg-accent text-accent hover:text-white transition text-[10px] uppercase font-bold tooltip" title="Issue to Ward">
-                            <ArrowRightLeft size={12} /> Issue
-                          </button>
-                          <button onClick={() => openIRModal(inv, 'return')} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warning/10 hover:bg-warning text-warning hover:text-white transition text-[10px] uppercase font-bold tooltip" title="Return from Ward">
-                            <ArrowDownLeft size={12} /> Return
-                          </button>
-                          <button onClick={() => openAdjustModal(inv)} className="p-1.5 rounded-lg bg-surface hover:bg-accent/20 border border-border/50 text-muted transition tooltip" title="Manual Adjust">
-                            <Plus size={14} />
-                          </button>
-                        </div>
+                        <div className="font-medium text-text">{row.supplier_name || 'Unassigned supplier'}</div>
+                      </td>
+                      <td className="px-5 py-4 text-muted">
+                        {row.latest_order_date ? formatDateTime(row.latest_order_date).split(',')[0] : 'No supply date'}
+                      </td>
+                      <td className="px-5 py-4 text-center text-base font-bold text-success">{row.quantity_full}</td>
+                      <td className="px-5 py-4 text-center text-base font-bold text-text">{row.quantity_empty}</td>
+                      <td className="px-5 py-4 text-center text-base font-bold text-accent">{row.quantity_in_use}</td>
+                      <td className="px-5 py-4 text-center text-base font-bold text-text">{total}</td>
+                      <td className="px-5 py-4">
+                        <StatusPill full={row.quantity_full} reorder={row.reorder_level} />
                       </td>
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan="8" className="px-5 py-8 text-center text-muted">No inventory records found.</td>
+                  <td colSpan="8" className="px-5 py-8 text-center text-muted">
+                    No oxygen inventory records found for this filter.
+                  </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
-
-      <div className="bg-surface/60 border border-border/50 rounded-2xl p-5 flex flex-col md:flex-row justify-between items-center gap-4 backdrop-blur shadow-sm">
-        <div className="flex flex-col">
-          <span className="text-sm font-semibold text-text">Inventory Valuation</span>
-          <span className="text-xs text-muted">Based on full + in-use cylinders</span>
-        </div>
-        <div className="text-2xl font-bold tracking-tight text-accent">
-          {formatCurrency(inventory.reduce((a, i) => a + Number(i.unit_price || 0) * (Number(i.quantity_full || 0) + Number(i.quantity_in_use || 0)), 0))}
-        </div>
-      </div>
-
-      {/* Manual Adjust Modal */}
-      <AnimatePresence>
-        {showAdjust && activeInv && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="w-full max-w-sm rounded-2xl border border-border/50 bg-surface shadow-2xl overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between border-b border-border/50 p-4">
-                <div>
-                  <h2 className="text-lg font-bold text-text">Adjust Inventory</h2>
-                  <p className="text-xs text-muted">{activeInv.cylinder_size} ({activeInv.gas_type})</p>
-                </div>
-                <button onClick={() => setShowAdjust(false)} className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"><X size={20}/></button>
-              </div>
-              <div className="p-4">
-                <form id="adjustForm" onSubmit={handleAdjustSubmit} className="space-y-4">
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-text">Bucket</label>
-                    <select required value={adjustForm.bucket} onChange={e => setAdjustForm({...adjustForm, bucket: e.target.value})} className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none focus:border-accent transition">
-                      <option value="full">Full Cylinders</option>
-                      <option value="empty">Empty Cylinders</option>
-                      <option value="in_use">In Use</option>
-                      <option value="damaged">Damaged</option>
-                    </select>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-text">Operation</label>
-                      <select required value={adjustForm.mode} onChange={e => setAdjustForm({...adjustForm, mode: e.target.value})} className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none focus:border-accent transition">
-                        <option value="add">Add (+)</option>
-                        <option value="subtract">Subtract (-)</option>
-                        <option value="set">Set (=)</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-text">Quantity</label>
-                      <input required type="number" min="0" value={adjustForm.quantity} onChange={e => setAdjustForm({...adjustForm, quantity: Number(e.target.value)})} className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none focus:border-accent transition" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-text">Reason / Notes</label>
-                    <input type="text" value={adjustForm.notes} onChange={e => setAdjustForm({...adjustForm, notes: e.target.value})} className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none focus:border-accent transition" placeholder="Found uncounted stock..." />
-                  </div>
-                </form>
-              </div>
-              <div className="border-t border-border/50 p-4 flex justify-end gap-3 bg-surface/50">
-                <button type="button" onClick={() => setShowAdjust(false)} className="rounded-xl px-4 py-2 text-sm font-semibold text-muted hover:bg-card hover:text-text transition">Cancel</button>
-                <button type="submit" form="adjustForm" className="rounded-xl bg-accent px-6 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90">Apply Adjust</button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Issue / Return Modal */}
-      <AnimatePresence>
-        {showIssueReturn && activeInv && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="w-full max-w-sm rounded-2xl border border-border/50 bg-surface shadow-2xl overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between border-b border-border/50 p-4">
-                <div>
-                  <h2 className="text-lg font-bold text-text">{irMode === 'issue' ? 'Issue to Ward' : 'Process Return'}</h2>
-                  <p className="text-xs text-muted">{activeInv.cylinder_size} ({activeInv.gas_type})</p>
-                </div>
-                <button onClick={() => setShowIssueReturn(false)} className="rounded-lg p-1 text-muted hover:bg-card/50 hover:text-text transition"><X size={20}/></button>
-              </div>
-              <div className="p-4">
-                <form id="irForm" onSubmit={handleIRSubmit} className="space-y-4">
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-text">{irMode === 'issue' ? 'Destination Ward' : 'From Ward'} *</label>
-                    <input required autoFocus type="text" value={irForm.ward} onChange={e => setIrForm({...irForm, ward: e.target.value})} className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none focus:border-accent transition" placeholder="e.g. ICU-01" />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-text">Quantity *</label>
-                    <input required type="number" min="1" max={irMode === 'issue' ? activeInv.quantity_full : activeInv.quantity_in_use} value={irForm.quantity} onChange={e => setIrForm({...irForm, quantity: Number(e.target.value)})} className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none focus:border-accent transition" />
-                    <p className="text-[10px] text-muted mt-1">
-                      {irMode === 'issue' ? `Available full: ${activeInv.quantity_full}` : `Currently in use: ${activeInv.quantity_in_use}`}
-                    </p>
-                  </div>
-                  {irMode === 'return' && (
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-text">Condition</label>
-                      <select required value={irForm.condition} onChange={e => setIrForm({...irForm, condition: e.target.value})} className="w-full rounded-lg border border-border/50 bg-background px-3 py-2 text-sm text-text outline-none focus:border-accent transition">
-                        <option value="good">Good (Empty)</option>
-                        <option value="damaged">Damaged</option>
-                      </select>
-                    </div>
-                  )}
-                </form>
-              </div>
-              <div className="border-t border-border/50 p-4 flex justify-end gap-3 bg-surface/50">
-                <button type="button" onClick={() => setShowIssueReturn(false)} className="rounded-xl px-4 py-2 text-sm font-semibold text-muted hover:bg-card hover:text-text transition">Cancel</button>
-                <button type="submit" form="irForm" className={`rounded-xl px-6 py-2 text-sm font-semibold text-white shadow-lg transition ${irMode === 'issue' ? 'bg-accent shadow-accent/20 hover:bg-accent/90' : 'bg-warning shadow-warning/20 hover:bg-warning/90'}`}>
-                  {irMode === 'issue' ? 'Issue Stock' : 'Confirm Return'}
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
     </div>
   );
+}
+
+function addOneDay(date) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + 1);
+  return next;
 }

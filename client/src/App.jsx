@@ -13,6 +13,7 @@ import Analytics from './pages/Analytics.jsx';
 import Refills from './pages/Refills.jsx';
 import Settings from './pages/Settings.jsx';
 import Stock from './pages/Stock.jsx';
+import Mapping from './pages/Mapping.jsx';
 import { useAuth } from './context/AuthContext.jsx';
 import { apiJson, getCachedData, initializeOfflineSync } from './lib/api.js';
 import Spinner from './components/Spinner.jsx';
@@ -42,6 +43,7 @@ const pageVariants = {
 export default function App() {
   const { session, accessToken } = useAuth();
   const location = useLocation();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [recentAlerts, setRecentAlerts] = useState(() => getCachedData('/api/alerts?status=active&limit=5')?.alerts || []);
   const [activeAlertCount, setActiveAlertCount] = useState(() => Number(getCachedData('/api/alerts?status=active&limit=5')?.count || 0));
   const [stockBadgeCount, setStockBadgeCount] = useState(() => {
@@ -50,6 +52,17 @@ export default function App() {
   });
 
   useEffect(() => initializeOfflineSync(), []);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    document.body.style.overflow = mobileNavOpen ? 'hidden' : '';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -92,16 +105,25 @@ export default function App() {
           element={
             <ProtectedRoute>
               <div className="flex h-full">
-                <Sidebar alertCount={badgeCount} stockBadgeCount={stockBadgeCount} />
+                <Sidebar
+                  alertCount={badgeCount}
+                  stockBadgeCount={stockBadgeCount}
+                  mobileOpen={mobileNavOpen}
+                  onCloseMobile={() => setMobileNavOpen(false)}
+                />
                 <div className="flex min-w-0 flex-1 flex-col">
-                  <Navbar recentAlerts={recentAlerts} alertCount={badgeCount} />
+                  <Navbar
+                    recentAlerts={recentAlerts}
+                    alertCount={badgeCount}
+                    onOpenMobileNav={() => setMobileNavOpen(true)}
+                  />
                   <motion.main
                     variants={pageVariants}
                     initial="hidden"
                     animate="show"
                     className="relative flex-1 overflow-auto"
                   >
-                    <div className="mx-auto max-w-7xl px-4 py-6">
+                    <div className="mx-auto max-w-7xl px-3 py-4 sm:px-4 sm:py-6 lg:px-6">
                       <ErrorBoundary>
                         <Routes>
                           <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -112,6 +134,7 @@ export default function App() {
                           <Route path="/analytics" element={<Analytics />} />
                           <Route path="/refills" element={<Refills />} />
                           <Route path="/stock" element={<Stock />} />
+                          <Route path="/mapping" element={<Mapping />} />
                           <Route path="/settings" element={<Settings />} />
                           <Route path="*" element={<Navigate to="/dashboard" replace />} />
                         </Routes>

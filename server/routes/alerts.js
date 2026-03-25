@@ -1,6 +1,8 @@
 ﻿import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
+import { getPlacedSourceIdSet } from '../utils/workspaceScope.js';
+import { shapeCylinderRow } from '../utils/cylinderShape.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -38,13 +40,16 @@ router.get('/', async (req, res, next) => {
     if (cylIds.length) {
       const { data: cylinders } = await supabaseAdmin
         .from('cylinders')
-        .select('id, cylinder_name, ward, location')
+        .select('id, cylinder_num, ward, floor, device_id')
         .in('id', cylIds);
-      cylMap = new Map((cylinders || []).map((c) => [c.id, c]));
+      cylMap = new Map((cylinders || []).map((c) => [c.id, shapeCylinderRow(c)]));
     }
 
-    const enriched = (alerts || []).map((a) => ({ ...a, cylinder: cylMap.get(a.cylinder_id) || null }));
-    res.json({ alerts: enriched, count: count || 0 });
+    const placedCylinderIds = await getPlacedSourceIdSet('cylinder');
+    const enriched = (alerts || [])
+      .filter((a) => !a.cylinder_id || placedCylinderIds.has(String(a.cylinder_id)))
+      .map((a) => ({ ...a, cylinder: cylMap.get(a.cylinder_id) || null }));
+    res.json({ alerts: enriched, count: enriched.length });
   } catch (e) {
     next(e);
   }

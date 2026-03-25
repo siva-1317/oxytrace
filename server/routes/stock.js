@@ -180,11 +180,16 @@ function normalizeOrderItems(items) {
     const quantity_received = Math.max(0, Number(it.quantity_received || 0));
     const unit_price = Math.max(0, Number(it.unit_price || 0));
     const total_price = Number((quantity_ordered * unit_price).toFixed(2));
+    const stock_mode =
+      String(it.stock_mode || 'replace_cylinder').trim() === 'new_cylinders'
+        ? 'new_cylinders'
+        : 'replace_cylinder';
     return {
       cylinder_size: String(it.cylinder_size || '').trim(),
       gas_type: String(it.gas_type || 'oxygen').trim(),
       quantity_ordered,
       quantity_received,
+      stock_mode,
       unit_price,
       total_price,
       pressure_bar: it.pressure_bar != null && it.pressure_bar !== '' ? Number(it.pressure_bar) : null,
@@ -702,33 +707,59 @@ router.patch('/orders/:id/deliver', async (req, res, next) => {
         Number(input.quantity_received ?? ex.quantity_received ?? 0)
       );
       const condition = String(input.condition || ex.condition || 'good');
+      const stock_mode =
+        String(input.stock_mode || ex.stock_mode || 'replace_cylinder') === 'new_cylinders'
+          ? 'new_cylinders'
+          : 'replace_cylinder';
       const previousQuantity = Math.max(0, Number(ex.quantity_received || 0));
       const previousCondition = String(ex.condition || 'good');
+      const previousMode =
+        String(ex.stock_mode || 'replace_cylinder') === 'new_cylinders'
+          ? 'new_cylinders'
+          : 'replace_cylinder';
       const deltaReceived = quantity_received - previousQuantity;
 
-      if (deltaReceived === 0 && condition === previousCondition) continue;
+      if (deltaReceived === 0 && condition === previousCondition && stock_mode === previousMode) continue;
       touched += 1;
 
       const { error: upErr } = await supabaseAdmin
         .from('stock_order_items')
-        .update({ quantity_received, condition })
+        .update({ quantity_received, condition, stock_mode })
         .eq('id', ex.id);
       if (upErr) throw new Error(upErr.message);
 
       const previousDelta =
         previousCondition === 'damaged'
-          ? { quantity_full: 0, quantity_damaged: -previousQuantity }
-          : { quantity_full: -previousQuantity, quantity_damaged: 0 };
+          ? {
+              quantity_full: 0,
+              quantity_empty: previousMode === 'replace_cylinder' ? previousQuantity : 0,
+              quantity_damaged: -previousQuantity
+            }
+          : {
+              quantity_full: -previousQuantity,
+              quantity_empty: previousMode === 'replace_cylinder' ? previousQuantity : 0,
+              quantity_damaged: 0
+            };
       const nextDelta =
         condition === 'damaged'
-          ? { quantity_full: 0, quantity_damaged: quantity_received }
-          : { quantity_full: quantity_received, quantity_damaged: 0 };
+          ? {
+              quantity_full: 0,
+              quantity_empty: stock_mode === 'replace_cylinder' ? -quantity_received : 0,
+              quantity_damaged: quantity_received
+            }
+          : {
+              quantity_full: quantity_received,
+              quantity_empty: stock_mode === 'replace_cylinder' ? -quantity_received : 0,
+              quantity_damaged: 0
+            };
 
       await updateInventoryBuckets(
         { cylinder_size: ex.cylinder_size, gas_type: ex.gas_type || 'oxygen' },
         {
           quantity_full:
             Number(previousDelta.quantity_full || 0) + Number(nextDelta.quantity_full || 0),
+          quantity_empty:
+            Number(previousDelta.quantity_empty || 0) + Number(nextDelta.quantity_empty || 0),
           quantity_damaged:
             Number(previousDelta.quantity_damaged || 0) + Number(nextDelta.quantity_damaged || 0)
         },
@@ -744,7 +775,12 @@ router.patch('/orders/:id/deliver', async (req, res, next) => {
           reference_id: order.order_number,
           reference_type: 'order',
           performed_by: received_by || req.user?.email || null,
-          notes: condition && condition !== 'good' ? `Condition: ${condition}` : null
+          notes: [
+            `Stock mode: ${stock_mode}`,
+            condition && condition !== 'good' ? `Condition: ${condition}` : null
+          ]
+            .filter(Boolean)
+            .join(' | ')
         });
       }
     }
@@ -793,8 +829,20 @@ router.delete('/orders/:id', async (req, res, next) => {
 
         const delta =
           String(item.condition || 'good') === 'damaged'
-            ? { quantity_damaged: -receivedQty }
-            : { quantity_full: -receivedQty };
+            ? {
+                quantity_damaged: -receivedQty,
+                quantity_empty:
+                  String(item.stock_mode || 'replace_cylinder') === 'replace_cylinder'
+                    ? receivedQty
+                    : 0
+              }
+            : {
+                quantity_full: -receivedQty,
+                quantity_empty:
+                  String(item.stock_mode || 'replace_cylinder') === 'replace_cylinder'
+                    ? receivedQty
+                    : 0
+              };
 
         await updateInventoryBuckets(
           { cylinder_size: item.cylinder_size, gas_type: item.gas_type || 'oxygen' },

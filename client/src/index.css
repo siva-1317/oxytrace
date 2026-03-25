@@ -125,3 +125,13 @@ body {
   filter: blur(14px);
   animation: meshShift 14s ease-in-out infinite;
 }
+
+.workspace-grid {
+  background-color: rgba(var(--surface), 0.5);
+  background-image:
+    linear-gradient(rgba(0, 119, 182, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 119, 182, 0.1) 1px, transparent 1px),
+    radial-gradient(circle at 20% 20%, rgba(0, 119, 182, 0.12), transparent 28%),
+    radial-gradient(circle at 80% 10%, rgba(0, 230, 118, 0.08), transparent 24%);
+  background-size: 32px 32px, 32px 32px, auto, auto;
+}

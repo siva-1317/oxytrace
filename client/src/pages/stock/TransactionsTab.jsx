@@ -28,11 +28,13 @@ export default function TransactionsTab() {
     if (accessToken) fetchTransactions();
   }, [accessToken]);
 
+  const oxygenTxs = txs.filter((tx) => (tx.gas_type || 'oxygen') === 'oxygen');
+
   const chartData = [
-    { name: 'Received', count: txs.filter(t => t.transaction_type === 'received').length, fill: '#10b981' }, // success
-    { name: 'Issued', count: txs.filter(t => t.transaction_type === 'issued').length, fill: '#00b4d8' }, // accent
-    { name: 'Returned', count: txs.filter(t => t.transaction_type === 'returned').length, fill: '#8b5cf6' }, // purple
-    { name: 'Damaged', count: txs.filter(t => t.transaction_type === 'damaged').length, fill: '#ef4444' } // danger
+    { name: 'Received', count: oxygenTxs.filter(t => t.transaction_type === 'received').length, fill: '#10b981' }, // success
+    { name: 'Issued', count: oxygenTxs.filter(t => t.transaction_type === 'issued').length, fill: '#00b4d8' }, // accent
+    { name: 'Returned', count: oxygenTxs.filter(t => t.transaction_type === 'returned').length, fill: '#8b5cf6' }, // purple
+    { name: 'Damaged', count: oxygenTxs.filter(t => t.transaction_type === 'damaged').length, fill: '#ef4444' } // danger
   ].filter(d => d.count > 0);
 
   const getTypeIcon = (type) => {
@@ -66,7 +68,7 @@ export default function TransactionsTab() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="md:col-span-2 bg-surface/70 border border-border/50 rounded-2xl p-5 shadow-sm backdrop-blur flex flex-col justify-center">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-sm font-semibold flex items-center gap-2"><History size={16} className="text-accent"/> Audit Log (Recent)</h3>
+            <h3 className="text-sm font-semibold flex items-center gap-2"><History size={16} className="text-accent"/> Oxygen Audit Log (Recent)</h3>
             <button className="flex items-center px-3 py-1.5 text-xs font-semibold bg-surface border border-border/60 hover:text-accent hover:border-accent/50 rounded-lg transition gap-1.5"><Download size={12}/> CSV</button>
           </div>
           
@@ -105,15 +107,15 @@ export default function TransactionsTab() {
               <tr>
                 <th className="px-5 py-4 font-semibold">Date & Time</th>
                 <th className="px-5 py-4 font-semibold">Type</th>
-                <th className="px-5 py-4 font-semibold">Cylinder/Gas</th>
+                <th className="px-5 py-4 font-semibold">Cylinder</th>
                 <th className="px-5 py-4 font-semibold">Qty</th>
                 <th className="px-5 py-4 font-semibold">Reference</th>
                 <th className="px-5 py-4 font-semibold">Performed By</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {txs.length > 0 ? (
-                txs.map((tx) => (
+              {oxygenTxs.length > 0 ? (
+                oxygenTxs.map((tx) => (
                   <tr key={tx.id} className="hover:bg-accent/5 transition">
                     <td className="px-5 py-4">
                        <span className="text-text font-medium">{formatDateTime(tx.created_at).split(',')[0]}</span>
@@ -127,7 +129,6 @@ export default function TransactionsTab() {
                     </td>
                     <td className="px-5 py-4">
                       <div className="font-semibold text-text">{tx.cylinder_size}</div>
-                      <div className="text-[10px] text-muted uppercase">{tx.gas_type}</div>
                     </td>
                     <td className="px-5 py-4">
                       <span className="font-bold text-[15px]">{tx.quantity > 0 ? '+' : ''}{tx.quantity}</span>
@@ -150,7 +151,7 @@ export default function TransactionsTab() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="6" className="px-5 py-8 text-center text-muted">No transactions recorded yet.</td>
+                  <td colSpan="6" className="px-5 py-8 text-center text-muted">No oxygen transactions recorded yet.</td>
                 </tr>
               )}
             </tbody>

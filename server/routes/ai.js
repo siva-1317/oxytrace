@@ -9,6 +9,8 @@ import {
   listModels,
   testGemini
 } from '../services/geminiService.js';
+import { filterRowsByPlacedSourceId, isPlacedSourceId } from '../utils/workspaceScope.js';
+import { shapeCylinderRow } from '../utils/cylinderShape.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -45,21 +47,21 @@ router.post('/summary', async (req, res, next) => {
 
     const { data: cylinders } = await supabaseAdmin
       .from('cylinders')
-      .select(
-        'id, cylinder_name, ward, location, is_active, sensor_readings (gas_weight_kg, leakage_ppm, valve_open, gas_level_pct, created_at)'
-      )
+      .select('id, cylinder_num, ward, floor, device_id, is_active')
       .order('created_at', { ascending: false });
+
+    const activeCylinders = (await filterRowsByPlacedSourceId('cylinder', cylinders || [])).map(shapeCylinderRow);
 
     const sys = {
       now: new Date().toISOString(),
-      alerts: alerts || [],
-      cylinders: (cylinders || []).slice(0, 30).map((c) => ({
+      alerts: (alerts || []).filter((a) => !a.cylinder_id || activeCylinders.some((c) => c.id === a.cylinder_id)),
+      cylinders: activeCylinders.slice(0, 30).map((c) => ({
         id: c.id,
-        name: c.cylinder_name,
+        name: c.cylinder_num,
         ward: c.ward,
-        location: c.location,
+        location: c.floor,
         is_active: c.is_active,
-        latest: Array.isArray(c.sensor_readings) && c.sensor_readings.length ? c.sensor_readings[0] : null
+        latest: null
       }))
     };
 
@@ -74,6 +76,8 @@ router.post('/cylinder-analysis', async (req, res, next) => {
   try {
     const { cylinderId, question } = req.body || {};
     if (!cylinderId || !question) return res.status(400).json({ error: 'Missing cylinderId/question' });
+
+    if (!(await isPlacedSourceId('cylinder', cylinderId))) return res.status(404).json({ error: 'Cylinder not active in workspace' });
 
     const { data: cylinder, error } = await supabaseAdmin
       .from('cylinders')

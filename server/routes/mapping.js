@@ -1,6 +1,7 @@
 import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
+import { shapeCylinderRow } from '../utils/cylinderShape.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -40,6 +41,10 @@ function normalizeEdge(edge) {
   };
 }
 
+function makeWorkspaceNodeId(type, sourceId) {
+  return `${type}:${sourceId}`;
+}
+
 function validateGraph(nodes, edges) {
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
   const issues = [];
@@ -60,6 +65,7 @@ function validateGraph(nodes, edges) {
       issues.push('Every connection must include id, source, and target.');
       continue;
     }
+
     const sourceNode = nodeMap.get(edge.source);
     const targetNode = nodeMap.get(edge.target);
     if (!sourceNode || !targetNode) {
@@ -92,17 +98,30 @@ function validateGraph(nodes, edges) {
 
   return {
     issues,
-    nodeMap,
-    deviceToCylinder,
     cylinderToDevice,
     cylinderToWard,
     wardToFloor
   };
 }
 
-function buildLocationLabel(wardNode, floorNode) {
-  if (wardNode?.label && floorNode?.label) return `${wardNode.label} / ${floorNode.label}`;
-  return wardNode?.label || floorNode?.label || null;
+function resolveMappedDeviceId(deviceNode) {
+  const candidates = [
+    deviceNode?.meta?.deviceKey,
+    deviceNode?.label,
+    deviceNode?.sourceId
+  ];
+
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return value;
+  }
+
+  return null;
+}
+
+function normalizeDeviceColumnValue(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
 }
 
 async function fetchWorkspaceRow() {
@@ -115,143 +134,197 @@ async function fetchWorkspaceRow() {
   return data || null;
 }
 
+async function persistWorkspaceRow(nodes, edges, updatedBy = null) {
+  const { data, error } = await supabaseAdmin
+    .from('workspace_mappings')
+    .upsert(
+      {
+        workspace_key: WORKSPACE_KEY,
+        nodes,
+        edges,
+        updated_by: updatedBy,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'workspace_key' }
+    )
+    .select('*')
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 async function fetchCatalog() {
-  const [{ data: floors, error: floorErr }, { data: wards, error: wardErr }, { data: cylinders, error: cylErr }, { data: devices, error: devErr }] =
-    await Promise.all([
-      supabaseAdmin.from('floors').select('*').order('name', { ascending: true }),
-      supabaseAdmin.from('wards').select('*').order('name', { ascending: true }),
-      supabaseAdmin
-        .from('cylinders')
-        .select('id, cylinder_name, ward, location, floor_name, esp32_device_id, is_active, total_capacity_kg')
-        .order('created_at', { ascending: false }),
-      supabaseAdmin
-        .from('iot_devices')
-        .select('id, device_id, assigned_ward, assigned_floor, cylinder_id, cylinder_label, status, battery_level, gas_type, cylinder_size')
-        .order('created_at', { ascending: false })
-    ]);
+  const [
+    { data: floors, error: floorErr },
+    { data: wards, error: wardErr },
+    { data: cylinders, error: cylErr },
+    workspace
+  ] = await Promise.all([
+    supabaseAdmin.from('floors').select('*').order('name', { ascending: true }),
+    supabaseAdmin.from('wards').select('*').order('name', { ascending: true }),
+    supabaseAdmin
+      .from('cylinders')
+      .select('id, cylinder_num, ward, floor, device_id, is_active')
+      .order('created_at', { ascending: false }),
+    fetchWorkspaceRow()
+  ]);
 
   if (floorErr) throw new Error(floorErr.message);
   if (wardErr) throw new Error(wardErr.message);
   if (cylErr) throw new Error(cylErr.message);
-  if (devErr) throw new Error(devErr.message);
 
-  const realDevices = devices || [];
-  const realDeviceKeySet = new Set(realDevices.map((item) => String(item.device_id || '').trim()).filter(Boolean));
-  const derivedDevices = (cylinders || [])
-    .filter((item) => item.esp32_device_id)
-    .filter((item) => !realDeviceKeySet.has(String(item.esp32_device_id).trim()))
-    .map((item) => ({
-      id: `virtual:${item.esp32_device_id}`,
-      device_id: item.esp32_device_id,
-      assigned_ward: item.ward || null,
-      assigned_floor: item.floor_name || null,
-      cylinder_id: item.id,
-      cylinder_label: item.cylinder_name || null,
-      status: item.is_active ? 'active' : 'inactive',
-      battery_level: null,
-      gas_type: null,
-      cylinder_size: null,
-      is_virtual: true
-    }));
+  const workspaceDevices = Array.isArray(workspace?.nodes)
+    ? workspace.nodes
+        .map(normalizeNode)
+        .filter((node) => node.type === 'device')
+        .map((node) => ({
+          id: node.sourceId,
+          device_id: node.label || node.meta?.deviceKey || node.sourceId
+        }))
+    : [];
+  const cylinderDevices = Array.from(
+    new Map(
+      (cylinders || [])
+        .map((row) => String(row?.device_id || '').trim())
+        .filter(Boolean)
+        .map((deviceId) => [deviceId, { id: deviceId, device_id: deviceId }])
+    ).values()
+  );
+  const deviceLibrary = Array.from(
+    new Map([...workspaceDevices, ...cylinderDevices].map((item) => [String(item.device_id || '').trim(), item])).values()
+  ).filter((item) => String(item.device_id || '').trim());
 
   return {
     floors: floors || [],
     wards: wards || [],
-    cylinders: cylinders || [],
-    devices: [...realDevices, ...derivedDevices]
+    cylinders: (cylinders || []).map(shapeCylinderRow),
+    devices: deviceLibrary
   };
 }
 
-async function persistDerivedAssignments({ nodes, cylinderToDevice, cylinderToWard, wardToFloor }) {
+async function persistDerivedAssignments({ nodes, previousNodes = [], cylinderToDevice, cylinderToWard, wardToFloor }) {
   const nodeMap = new Map(nodes.map((node) => [node.id, node]));
   const cylinderUpdates = [];
-  const deviceUpdates = [];
-  const cylinderSourceIds = nodes
+
+  const currentCylinderSourceIds = nodes
     .filter((item) => item.type === 'cylinder' && item.sourceId)
     .map((item) => item.sourceId);
+  const previousCylinderSourceIds = previousNodes
+    .filter((item) => item?.type === 'cylinder' && item?.sourceId)
+    .map((item) => String(item.sourceId).trim())
+    .filter(Boolean);
+  const cylinderSourceIds = Array.from(new Set([...currentCylinderSourceIds, ...previousCylinderSourceIds]));
   const existingCylinderMap = new Map();
 
   if (cylinderSourceIds.length) {
-    const { data: existingCylinders, error } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('cylinders')
-      .select('id, esp32_device_id, ward, floor_name, location, mapped_device_id, mapped_device_label')
+      .select('id, device_id, cylinder_num, ward, floor')
       .in('id', cylinderSourceIds);
     if (error) throw new Error(error.message);
-    for (const row of existingCylinders || []) {
-      existingCylinderMap.set(row.id, row);
-    }
+    for (const row of data || []) existingCylinderMap.set(row.id, row);
   }
 
   for (const node of nodes.filter((item) => item.type === 'cylinder' && item.sourceId)) {
     const wardNode = nodeMap.get(cylinderToWard.get(node.id));
     const floorNode = wardNode ? nodeMap.get(wardToFloor.get(wardNode.id)) : null;
-    const deviceNode = nodeMap.get(Array.from(cylinderToDevice.entries()).find(([, cylinderNodeId]) => cylinderNodeId === node.id)?.[0]);
+    const deviceNodeId = cylinderToDevice.get(node.id) || null;
+    const deviceNode = deviceNodeId ? nodeMap.get(deviceNodeId) : null;
     const existing = existingCylinderMap.get(node.sourceId) || null;
-    const nextDeviceKey = deviceNode?.meta?.deviceKey || deviceNode?.label || existing?.esp32_device_id || null;
+    const cylinderLabel = node.label || existing?.cylinder_num || null;
+    const nextDeviceKey = resolveMappedDeviceId(deviceNode);
 
     cylinderUpdates.push({
       id: node.sourceId,
-      ward: wardNode?.label || null,
-      floor_name: floorNode?.label || null,
-      location: buildLocationLabel(wardNode, floorNode),
-      mapped_device_id: deviceNode?.sourceId || existing?.mapped_device_id || null,
-      mapped_device_label: deviceNode?.label || existing?.mapped_device_label || null,
-      esp32_device_id: nextDeviceKey
+      cylinder_num: cylinderLabel,
+      ward: wardNode?.label || 'Unassigned',
+      floor: floorNode?.label || null,
+      device_id: normalizeDeviceColumnValue(nextDeviceKey)
     });
   }
 
-  for (const node of nodes.filter((item) => item.type === 'device' && item.sourceId)) {
-    const cylinderNode = nodeMap.get(cylinderToDevice.has(node.id) ? cylinderToDevice.get(node.id) : null);
-    const wardNode = cylinderNode ? nodeMap.get(cylinderToWard.get(cylinderNode.id)) : null;
-    const floorNode = wardNode ? nodeMap.get(wardToFloor.get(wardNode.id)) : null;
-
-    deviceUpdates.push({
-      id: node.sourceId,
-      assigned_ward: wardNode?.label || null,
-      assigned_floor: floorNode?.label || null,
-      cylinder_id: cylinderNode?.sourceId || null,
-      cylinder_label: cylinderNode?.label || null
+  for (const cylinderId of previousCylinderSourceIds) {
+    if (currentCylinderSourceIds.includes(cylinderId)) continue;
+    const existing = existingCylinderMap.get(cylinderId);
+    if (!existing) continue;
+    cylinderUpdates.push({
+      id: cylinderId,
+      cylinder_num: existing.cylinder_num,
+      ward: 'Unassigned',
+      floor: null,
+      device_id: null
     });
   }
 
   for (const patch of cylinderUpdates) {
+    const previous = existingCylinderMap.get(patch.id) || null;
+    const previousDeviceKey = String(previous?.device_id || '').trim() || null;
+    const nextDeviceKey = String(patch.device_id || '').trim() || null;
+
     const { error } = await supabaseAdmin
       .from('cylinders')
       .update({
+        device_id: patch.device_id,
+        cylinder_num: patch.cylinder_num,
         ward: patch.ward,
-        floor_name: patch.floor_name,
-        location: patch.location,
-        mapped_device_id: patch.mapped_device_id,
-        mapped_device_label: patch.mapped_device_label,
-        esp32_device_id: patch.esp32_device_id
+        floor: patch.floor
       })
       .eq('id', patch.id);
     if (error) throw new Error(error.message);
-  }
 
-  for (const patch of deviceUpdates) {
-    if (String(patch.id || '').startsWith('virtual:')) continue;
-    const { error } = await supabaseAdmin
-      .from('iot_devices')
-      .update({
-        assigned_ward: patch.assigned_ward,
-        assigned_floor: patch.assigned_floor,
-        cylinder_id: patch.cylinder_id,
-        cylinder_label: patch.cylinder_label
-      })
-      .eq('id', patch.id);
-    if (error) throw new Error(error.message);
+    if (nextDeviceKey) {
+      const deviceKeys = Array.from(new Set([nextDeviceKey, previousDeviceKey].filter(Boolean)));
+
+      const { error: readingsError } = await supabaseAdmin
+        .from('sensor_readings')
+        .update({ cylinder_id: patch.id })
+        .in('esp32_device_id', deviceKeys)
+        .is('cylinder_id', null);
+      if (readingsError) throw new Error(readingsError.message);
+
+      const { error: alertsError } = await supabaseAdmin
+        .from('alerts')
+        .update({ cylinder_id: patch.id })
+        .in('esp32_device_id', deviceKeys)
+        .is('cylinder_id', null);
+      if (alertsError) throw new Error(alertsError.message);
+    }
   }
+}
+
+async function syncWorkspaceRemoval({ type, sourceId, updatedBy = null }) {
+  const previousWorkspace = await fetchWorkspaceRow();
+  if (!previousWorkspace) return;
+
+  const nodeId = makeWorkspaceNodeId(type, sourceId);
+  const previousNodes = (previousWorkspace.nodes || []).map(normalizeNode);
+  const nextNodes = previousNodes.filter((node) => node.id !== nodeId);
+  const nextEdges = (previousWorkspace.edges || [])
+    .map(normalizeEdge)
+    .filter((edge) => edge.source !== nodeId && edge.target !== nodeId);
+  const validation = validateGraph(nextNodes, nextEdges);
+
+  await persistWorkspaceRow(nextNodes, nextEdges, updatedBy);
+  await persistDerivedAssignments({
+    nodes: nextNodes,
+    previousNodes,
+    cylinderToDevice: validation.cylinderToDevice,
+    cylinderToWard: validation.cylinderToWard,
+    wardToFloor: validation.wardToFloor
+  });
 }
 
 router.get('/workspace', async (_req, res, next) => {
   try {
     const [catalog, workspace] = await Promise.all([fetchCatalog(), fetchWorkspaceRow()]);
+    const workspaceNodes = Array.isArray(workspace?.nodes)
+      ? workspace.nodes.map(normalizeNode).filter((node) => !(node.type === 'device' && node.meta?.libraryOnly))
+      : [];
     res.json({
       workspace: {
         id: workspace?.id || null,
         workspace_key: WORKSPACE_KEY,
-        nodes: workspace?.nodes || [],
+        nodes: workspaceNodes,
         edges: workspace?.edges || [],
         updated_at: workspace?.updated_at || null
       },
@@ -264,33 +337,19 @@ router.get('/workspace', async (_req, res, next) => {
 
 router.put('/workspace', async (req, res, next) => {
   try {
-    const rawNodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
-    const rawEdges = Array.isArray(req.body?.edges) ? req.body.edges : [];
-    const nodes = rawNodes.map(normalizeNode);
-    const edges = rawEdges.map(normalizeEdge);
+    const previousWorkspace = await fetchWorkspaceRow();
+    const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes.map(normalizeNode) : [];
+    const edges = Array.isArray(req.body?.edges) ? req.body.edges.map(normalizeEdge) : [];
     const validation = validateGraph(nodes, edges);
 
     if (validation.issues.length) {
       return res.status(400).json({ error: validation.issues[0], issues: validation.issues });
     }
 
-    const payload = {
-      workspace_key: WORKSPACE_KEY,
-      nodes,
-      edges,
-      updated_by: req.user?.email || null,
-      updated_at: new Date().toISOString()
-    };
-
-    const { data: saved, error } = await supabaseAdmin
-      .from('workspace_mappings')
-      .upsert(payload, { onConflict: 'workspace_key' })
-      .select('*')
-      .single();
-    if (error) throw new Error(error.message);
-
+    const saved = await persistWorkspaceRow(nodes, edges, req.user?.email || null);
     await persistDerivedAssignments({
       nodes,
+      previousNodes: Array.isArray(previousWorkspace?.nodes) ? previousWorkspace.nodes.map(normalizeNode) : [],
       cylinderToDevice: validation.cylinderToDevice,
       cylinderToWard: validation.cylinderToWard,
       wardToFloor: validation.wardToFloor
@@ -346,6 +405,63 @@ router.post('/wards', async (req, res, next) => {
     if (error) throw new Error(error.message);
 
     res.status(201).json({ ward: data });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/cylinders', async (req, res, next) => {
+  try {
+    const cylinderNumber = String(req.body?.cylinder_number || '').trim();
+    if (!cylinderNumber) return res.status(400).json({ error: 'Missing cylinder number' });
+
+    const { data, error } = await supabaseAdmin
+      .from('cylinders')
+      .insert({
+        cylinder_num: cylinderNumber,
+        ward: 'Unassigned',
+        floor: null,
+        device_id: null,
+        is_active: true
+      })
+      .select('id, cylinder_num, ward, floor, device_id, is_active')
+      .single();
+    if (error) throw new Error(error.message);
+
+    res.status(201).json({ cylinder: shapeCylinderRow(data) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.delete('/floors/:id', async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin.from('floors').delete().eq('id', req.params.id);
+    if (error) throw new Error(error.message);
+    await syncWorkspaceRemoval({ type: 'floor', sourceId: req.params.id, updatedBy: req.user?.email || null });
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.delete('/wards/:id', async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin.from('wards').delete().eq('id', req.params.id);
+    if (error) throw new Error(error.message);
+    await syncWorkspaceRemoval({ type: 'ward', sourceId: req.params.id, updatedBy: req.user?.email || null });
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.delete('/cylinders/:id', async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin.from('cylinders').delete().eq('id', req.params.id);
+    if (error) throw new Error(error.message);
+    await syncWorkspaceRemoval({ type: 'cylinder', sourceId: req.params.id, updatedBy: req.user?.email || null });
+    res.json({ ok: true });
   } catch (e) {
     next(e);
   }
