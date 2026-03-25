@@ -20,6 +20,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
 import { supabase } from '../lib/supabaseClient.js';
 import { normalizeTelemetryRow } from '../lib/telemetry.js';
+import { mergeCylinderLiveReading } from '../lib/cylinderLive.js';
 import AIAnalysisPanel from '../components/AIAnalysisPanel.jsx';
 import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
 import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
@@ -66,18 +67,23 @@ export default function CylinderDetail() {
   const [readings, setReadings] = useState(() => getCachedData(`/api/readings/${id}?range=1d`)?.readings || []);
   const [range, setRange] = useState('1d');
   const [refills, setRefills] = useState([]);
+  const [cylinderTypes, setCylinderTypes] = useState([]);
   const [openRefill, setOpenRefill] = useState(false);
-  const [refillForm, setRefillForm] = useState({ refilled_by: '', new_weight_kg: '', notes: '' });
+  const [refillForm, setRefillForm] = useState({ type_id: '' });
 
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
     async function load() {
       try {
-        const data = await apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey });
+        const [data, typeData] = await Promise.all([
+          apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey }),
+          apiJson('/api/settings/cylinder-types', { token: accessToken })
+        ]);
         if (cancelled) return;
         setDetail(data.cylinder);
         setRefills(data.refills || []);
+        setCylinderTypes(typeData.cylinderTypes || []);
       } catch (e) {
         toast.error(e.message);
       }
@@ -152,11 +158,7 @@ export default function CylinderDetail() {
             raw: payload.new,
             normalized: newReading
           });
-          // Update the gauge/latest reading
-          setDetail((prev) => ({
-            ...prev,
-            latest_reading: newReading
-          }));
+          setDetail((prev) => (prev ? mergeCylinderLiveReading(prev, newReading) : prev));
           // Prepend to the readings array for the graphs
           setReadings((prev) => [newReading, ...prev]);
         }
@@ -186,23 +188,18 @@ export default function CylinderDetail() {
   async function submitRefill(e) {
     e.preventDefault();
     try {
-      const prevWeight = Number(latest.gas_weight_kg ?? 0);
-      const newWeight = Number(refillForm.new_weight_kg);
       await apiJson('/api/refills', {
         token: accessToken,
         method: 'POST',
         queueOffline: true,
         body: {
           cylinder_id: id,
-          refilled_by: refillForm.refilled_by,
-          previous_weight_kg: prevWeight,
-          new_weight_kg: newWeight,
-          notes: refillForm.notes
+          type_id: refillForm.type_id
         }
       });
       toast.success('Refill logged');
       setOpenRefill(false);
-      setRefillForm({ refilled_by: '', new_weight_kg: '', notes: '' });
+      setRefillForm({ type_id: '' });
       const refreshed = await apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey });
       setDetail(refreshed.cylinder);
       setRefills(refreshed.refills || []);
@@ -293,18 +290,18 @@ export default function CylinderDetail() {
               <thead className="bg-surface/50 text-xs uppercase text-muted border-b border-border/50">
                 <tr>
                   <th className="px-4 py-3 font-semibold">Date</th>
-                  <th className="px-4 py-3 font-semibold">Prev</th>
-                  <th className="px-4 py-3 font-semibold">New</th>
-                  <th className="px-4 py-3 font-semibold">By</th>
+                  <th className="px-4 py-3 font-semibold">Type</th>
+                  <th className="px-4 py-3 font-semibold">Full</th>
+                  <th className="px-4 py-3 font-semibold">Empty</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/30">
                 {(refills || []).map((r) => (
                   <tr key={r.id} className="hover:bg-accent/5 transition group">
-                    <td className="px-4 py-3 text-muted">{formatDateTime(r.refill_date)}</td>
-                    <td className="px-4 py-3 font-mono">{Number(r.previous_weight_kg ?? 0).toFixed(1)}</td>
-                    <td className="px-4 py-3 font-mono">{Number(r.new_weight_kg ?? 0).toFixed(1)}</td>
-                    <td className="px-4 py-3 text-muted">{r.refilled_by}</td>
+                    <td className="px-4 py-3 text-muted">{formatDateTime(r.refill_time)}</td>
+                    <td className="px-4 py-3 font-mono">{r.type?.type_name || '-'}</td>
+                    <td className="px-4 py-3 font-mono">{r.type?.full_weight == null ? '-' : `${Number(r.type.full_weight).toFixed(1)} kg`}</td>
+                    <td className="px-4 py-3 text-muted">{r.type?.empty_weight == null ? '-' : `${Number(r.type.empty_weight).toFixed(1)} kg`}</td>
                   </tr>
                 ))}
               </tbody>
@@ -387,33 +384,20 @@ export default function CylinderDetail() {
       <Modal open={openRefill} title="Log refill" onClose={() => setOpenRefill(false)}>
         <form onSubmit={submitRefill} className="space-y-3">
           <label className="text-xs text-muted">
-            Refilled by
-            <input
-              value={refillForm.refilled_by}
-              onChange={(e) => setRefillForm((f) => ({ ...f, refilled_by: e.target.value }))}
+            Cylinder type
+            <select
+              value={refillForm.type_id}
+              onChange={(e) => setRefillForm((f) => ({ ...f, type_id: e.target.value }))}
               className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
               required
-            />
-          </label>
-          <label className="text-xs text-muted">
-            New weight (kg)
-            <input
-              type="number"
-              step="0.1"
-              value={refillForm.new_weight_kg}
-              onChange={(e) => setRefillForm((f) => ({ ...f, new_weight_kg: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
-              required
-            />
-          </label>
-          <label className="text-xs text-muted">
-            Notes
-            <textarea
-              value={refillForm.notes}
-              onChange={(e) => setRefillForm((f) => ({ ...f, notes: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
-              rows={3}
-            />
+            >
+              <option value="">Select...</option>
+              {cylinderTypes.map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.type_name} · Full {Number(type.full_weight).toFixed(1)} kg · Empty {Number(type.empty_weight).toFixed(1)} kg
+                </option>
+              ))}
+            </select>
           </label>
           <button className="w-full rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">
             Save

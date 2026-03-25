@@ -9,6 +9,7 @@ import { loadHospitalProfile, saveHospitalProfile } from '../lib/hospitalProfile
 const tabs = [
   { key: 'profile', label: 'Hospital Details' },
   { key: 'cylinders', label: 'Cylinders' },
+  { key: 'cylinder-types', label: 'Cylinder Types' },
   { key: 'thresholds', label: 'Alert Thresholds' },
   { key: 'integrations', label: 'Integrations' },
   { key: 'ai', label: 'AI Settings' }
@@ -20,6 +21,7 @@ export default function Settings() {
   const [tab, setTab] = useState('profile');
   const [drafts, setDrafts] = useState({});
   const [savingId, setSavingId] = useState(null);
+  const [typeSavingId, setTypeSavingId] = useState(null);
   const [thresholds, setThresholds] = useState({
     low_gas_pct: 20,
     danger_gas_pct: 10,
@@ -29,6 +31,9 @@ export default function Settings() {
     danger_weight_kg: 5
   });
   const [hospitalProfile, setHospitalProfile] = useState(() => loadHospitalProfile());
+  const [cylinderTypes, setCylinderTypes] = useState([]);
+  const [typeDrafts, setTypeDrafts] = useState({});
+  const [newType, setNewType] = useState({ type_name: '', full_weight: '', empty_weight: '' });
 
   const ingestUrl = `${import.meta.env.VITE_API_URL}/api/readings/ingest`;
 
@@ -48,9 +53,15 @@ export default function Settings() {
 
     async function loadSettings() {
       try {
-        const thresholdRes = await apiJson('/api/settings/thresholds', { token: accessToken });
+        const [thresholdRes, typeRes] = await Promise.all([
+          apiJson('/api/settings/thresholds', { token: accessToken }),
+          apiJson('/api/settings/cylinder-types', { token: accessToken })
+        ]);
         if (!cancelled && thresholdRes?.thresholds) {
           setThresholds((prev) => ({ ...prev, ...thresholdRes.thresholds }));
+        }
+        if (!cancelled) {
+          setCylinderTypes(typeRes?.cylinderTypes || []);
         }
       } catch (e) {
         toast.error(e.message);
@@ -65,6 +76,10 @@ export default function Settings() {
 
   function updateDraft(id, patch) {
     setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
+  }
+
+  function updateTypeDraft(id, patch) {
+    setTypeDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
   }
 
   function getDraftRow(c) {
@@ -85,6 +100,25 @@ export default function Settings() {
       String(d.cylinder_num) !== String(c.cylinder_num ?? c.cylinder_name ?? '') ||
       String(d.ward) !== String(c.ward ?? '') ||
       String(d.floor) !== String(c.floor ?? c.floor_name ?? '')
+    );
+  }
+
+  function getTypeRow(type) {
+    const draft = typeDrafts[type.id] || {};
+    return {
+      type_name: draft.type_name ?? type.type_name ?? '',
+      full_weight: draft.full_weight ?? type.full_weight ?? '',
+      empty_weight: draft.empty_weight ?? type.empty_weight ?? ''
+    };
+  }
+
+  function isTypeDirty(type) {
+    if (!typeDrafts[type.id]) return false;
+    const row = getTypeRow(type);
+    return (
+      String(row.type_name) !== String(type.type_name ?? '') ||
+      Number(row.full_weight) !== Number(type.full_weight ?? 0) ||
+      Number(row.empty_weight) !== Number(type.empty_weight ?? 0)
     );
   }
 
@@ -141,6 +175,70 @@ export default function Settings() {
         queueOffline: true
       });
       toast.success('Thresholds saved');
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function createCylinderType() {
+    try {
+      await apiJson('/api/settings/cylinder-types', {
+        token: accessToken,
+        method: 'POST',
+        body: {
+          type_name: String(newType.type_name || '').trim(),
+          full_weight: Number(newType.full_weight),
+          empty_weight: Number(newType.empty_weight)
+        }
+      });
+      toast.success('Cylinder type created');
+      setNewType({ type_name: '', full_weight: '', empty_weight: '' });
+      const res = await apiJson('/api/settings/cylinder-types', { token: accessToken });
+      setCylinderTypes(res.cylinderTypes || []);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function saveCylinderType(type) {
+    const row = getTypeRow(type);
+    setTypeSavingId(type.id);
+    try {
+      await apiJson(`/api/settings/cylinder-types/${type.id}`, {
+        token: accessToken,
+        method: 'PATCH',
+        body: {
+          type_name: String(row.type_name || '').trim(),
+          full_weight: Number(row.full_weight),
+          empty_weight: Number(row.empty_weight)
+        }
+      });
+      toast.success('Cylinder type saved');
+      setTypeDrafts((prev) => {
+        const next = { ...prev };
+        delete next[type.id];
+        return next;
+      });
+      const res = await apiJson('/api/settings/cylinder-types', { token: accessToken });
+      setCylinderTypes(res.cylinderTypes || []);
+      refresh();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setTypeSavingId(null);
+    }
+  }
+
+  async function deleteCylinderType(typeId) {
+    if (!confirm('Delete this cylinder type?')) return;
+    try {
+      await apiJson(`/api/settings/cylinder-types/${typeId}`, {
+        token: accessToken,
+        method: 'DELETE'
+      });
+      toast.success('Cylinder type deleted');
+      setCylinderTypes((prev) => prev.filter((type) => type.id !== typeId));
+      refresh();
     } catch (e) {
       toast.error(e.message);
     }
@@ -256,6 +354,72 @@ export default function Settings() {
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === 'cylinder-types' ? (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
+            <div className="text-lg font-semibold">Cylinder types</div>
+            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+              <label className="text-xs text-muted">
+                Type name
+                <input value={newType.type_name} onChange={(e) => setNewType((p) => ({ ...p, type_name: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs text-muted">
+                Full weight
+                <input type="number" step="0.1" value={newType.full_weight} onChange={(e) => setNewType((p) => ({ ...p, full_weight: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs text-muted">
+                Empty weight
+                <input type="number" step="0.1" value={newType.empty_weight} onChange={(e) => setNewType((p) => ({ ...p, empty_weight: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+              </label>
+            </div>
+            <div className="mt-4">
+              <button onClick={createCylinderType} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">Create type</button>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border border-border/50 bg-surface/70 shadow-sm backdrop-blur">
+            <div className="overflow-x-auto custom-scrollbar">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-border/50 bg-surface/50 text-xs uppercase text-muted">
+                  <tr>
+                    <th className="px-5 py-4 font-semibold">Type</th>
+                    <th className="px-5 py-4 font-semibold">Full weight</th>
+                    <th className="px-5 py-4 font-semibold">Empty weight</th>
+                    <th className="px-5 py-4 font-semibold">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30">
+                  {cylinderTypes.map((type) => {
+                    const row = getTypeRow(type);
+                    const dirty = isTypeDirty(type);
+                    const saving = typeSavingId === type.id;
+                    return (
+                      <tr key={type.id} className="group transition hover:bg-accent/5">
+                        <td className="px-5 py-4"><input value={row.type_name} onChange={(e) => updateTypeDraft(type.id, { type_name: e.target.value })} className="w-48 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none" /></td>
+                        <td className="px-5 py-4"><input type="number" step="0.1" value={row.full_weight} onChange={(e) => updateTypeDraft(type.id, { full_weight: e.target.value })} className="w-32 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none" /></td>
+                        <td className="px-5 py-4"><input type="number" step="0.1" value={row.empty_weight} onChange={(e) => updateTypeDraft(type.id, { empty_weight: e.target.value })} className="w-32 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-sm shadow-sm outline-none" /></td>
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => saveCylinderType(type)} disabled={!dirty || saving} className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-surface px-3 py-1.5 text-xs font-semibold text-text shadow-sm transition hover:border-accent hover:text-accent disabled:opacity-50">
+                              <Save size={14} />
+                              {saving ? 'Saving...' : 'Save'}
+                            </button>
+                            <button onClick={() => deleteCylinderType(type.id)} className="inline-flex items-center gap-2 rounded-lg bg-danger px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-danger/90">
+                              <Trash2 size={14} />
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       ) : null}

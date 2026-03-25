@@ -2,9 +2,9 @@ import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
 import { filterRowsByPlacedSourceId, isPlacedSourceId } from '../utils/workspaceScope.js';
-import { normalizeTelemetryRow } from '../utils/telemetryNormalize.js';
 import { buildTelemetryDeviceMap, canonicalizeDeviceKey, deviceKeysMatch } from '../utils/deviceMatch.js';
 import { shapeCylinderRow } from '../utils/cylinderShape.js';
+import { buildLiveCylinder, buildLiveReading } from '../utils/cylinderLive.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -79,7 +79,7 @@ async function fetchLatestTelemetryByMappedDevices(cylinders) {
   for (const cylinder of cylinders) {
     const matchedRow = exactTelemetryByDevice.get(canonicalizeDeviceKey(cylinder.device_id));
     if (!matchedRow) continue;
-    latestByCylinderId.set(cylinder.id, normalizeTelemetryRow(matchedRow, cylinder));
+    latestByCylinderId.set(cylinder.id, matchedRow);
   }
 
   const missingCylinders = cylinders.filter((cylinder) => !latestByCylinderId.has(cylinder.id));
@@ -96,10 +96,33 @@ async function fetchLatestTelemetryByMappedDevices(cylinders) {
   for (const cylinder of missingCylinders) {
     const matchedRow = fallbackTelemetryByDevice.get(canonicalizeDeviceKey(cylinder.device_id));
     if (!matchedRow) continue;
-    latestByCylinderId.set(cylinder.id, normalizeTelemetryRow(matchedRow, cylinder));
+    latestByCylinderId.set(cylinder.id, matchedRow);
   }
 
   return latestByCylinderId;
+}
+
+async function fetchCylinderTypesById(cylinders) {
+  const typeIds = Array.from(
+    new Set(
+      (cylinders || [])
+        .map((cylinder) => String(cylinder?.type_id || '').trim())
+        .filter(Boolean)
+    )
+  );
+  const map = new Map();
+  if (!typeIds.length) return map;
+
+  const { data, error } = await supabaseAdmin
+    .from('cylinder_types')
+    .select('*')
+    .in('id', typeIds);
+  if (error) throw new Error(error.message);
+
+  for (const row of data || []) {
+    map.set(String(row.id), row);
+  }
+  return map;
 }
 
 router.get('/', async (_req, res, next) => {
@@ -112,17 +135,13 @@ router.get('/', async (_req, res, next) => {
     if (error) throw new Error(error.message);
 
     const cylList = (await filterRowsByPlacedSourceId('cylinder', cylinders || [])).map(shapeCylinderRow);
+    const typeMap = await fetchCylinderTypesById(cylList);
     const latestByCylinderId = await fetchLatestTelemetryByMappedDevices(cylList);
 
     res.json({
-      cylinders: cylList.map((c) => ({
-        ...shapeCylinderRow(c),
-        weight: latestByCylinderId.get(c.id)?.gas_weight_kg ?? latestByCylinderId.get(c.id)?.current_weight ?? null,
-        valve_pos: latestByCylinderId.get(c.id)?.valve_position ?? null,
-        leak_detect: latestByCylinderId.get(c.id)?.leak_detect ?? null,
-        timestamp: latestByCylinderId.get(c.id)?.created_at ?? null,
-        latest_reading: latestByCylinderId.get(c.id) || null
-      }))
+      cylinders: cylList.map((c) =>
+        buildLiveCylinder(c, latestByCylinderId.get(c.id) || null, typeMap.get(String(c.type_id || '')) || null)
+      )
     });
   } catch (e) {
     next(e);
@@ -135,7 +154,8 @@ router.post('/', async (req, res, next) => {
       device_id: String(req.body.device_id || req.body.esp32_device_id || '').trim(),
       cylinder_num: String(req.body.cylinder_num || req.body.cylinder_name || '').trim(),
       ward: String(req.body.ward || '').trim(),
-      floor: String(req.body.floor || req.body.floor_name || '').trim()
+      floor: String(req.body.floor || req.body.floor_name || '').trim(),
+      type_id: req.body.type_id ? String(req.body.type_id).trim() : null
     };
 
     if (!payload.device_id || !payload.cylinder_num || !payload.ward || !payload.floor) {
@@ -148,7 +168,8 @@ router.post('/', async (req, res, next) => {
         device_id: payload.device_id,
         cylinder_num: payload.cylinder_num,
         ward: payload.ward,
-        floor: payload.floor
+        floor: payload.floor,
+        type_id: payload.type_id
       })
       .select('*')
       .single();
@@ -171,6 +192,8 @@ router.get('/:id', async (req, res, next) => {
       .eq('id', cylinderId)
       .single();
     if (error) throw new Error(error.message);
+
+    const typeMap = await fetchCylinderTypesById([cyl]);
 
     const exactDeviceId = String(cyl.device_id || '').trim();
     let matchedTelemetry = null;
@@ -197,11 +220,12 @@ router.get('/:id', async (req, res, next) => {
         (latestTelemetry || []).find((row) => deviceKeysMatch(row.device_id, cyl.device_id)) || null;
     }
 
-    const { data: refills } = await supabaseAdmin
-      .from('refill_history')
-      .select('*')
+    const { data: refills, error: refillError } = await supabaseAdmin
+      .from('refill_logs')
+      .select('*, cylinder_types (id, type_name, full_weight, empty_weight)')
       .eq('cylinder_id', cylinderId)
-      .order('refill_date', { ascending: false });
+      .order('refill_time', { ascending: false });
+    if (refillError) throw new Error(refillError.message);
 
     const { data: activeAlerts } = await supabaseAdmin
       .from('alerts')
@@ -211,8 +235,14 @@ router.get('/:id', async (req, res, next) => {
       .order('created_at', { ascending: false });
 
     res.json({
-      cylinder: { ...shapeCylinderRow(cyl), latest_reading: matchedTelemetry ? normalizeTelemetryRow(matchedTelemetry, cyl) : null, alerts: activeAlerts || [] },
-      refills: refills || []
+      cylinder: {
+        ...buildLiveCylinder(shapeCylinderRow(cyl), matchedTelemetry, typeMap.get(String(cyl.type_id || '')) || null),
+        alerts: activeAlerts || []
+      },
+      refills: (refills || []).map((row) => ({
+        ...row,
+        type: row.cylinder_types || null
+      }))
     });
   } catch (e) {
     next(e);
@@ -227,7 +257,8 @@ router.patch('/:id', async (req, res, next) => {
       'cylinder_num',
       'ward',
       'floor',
-      'is_active'
+      'is_active',
+      'type_id'
     ];
     const patch = {};
     for (const k of allowed) {
@@ -236,7 +267,8 @@ router.patch('/:id', async (req, res, next) => {
 
     const { data, error } = await supabaseAdmin.from('cylinders').update(patch).eq('id', id).select('*').single();
     if (error) throw new Error(error.message);
-    res.json({ cylinder: shapeCylinderRow(data) });
+    const typeMap = await fetchCylinderTypesById([data]);
+    res.json({ cylinder: buildLiveCylinder(shapeCylinderRow(data), null, typeMap.get(String(data.type_id || '')) || null) });
   } catch (e) {
     next(e);
   }

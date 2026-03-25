@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext.jsx';
 import { apiJson, getCachedData, setCachedData } from '../lib/api.js';
 import { normalizeTelemetryRow } from '../lib/telemetry.js';
+import { mergeCylinderLiveReading } from '../lib/cylinderLive.js';
 import { useRealtime } from './useRealtime.js';
 
 const CYLINDERS_CACHE_KEY = '/api/cylinders';
@@ -53,12 +54,7 @@ export function useCylinders() {
         const next = prev.map((c) =>
           c.id === reading.cylinder_id || c.device_id === readingDeviceId
             ? {
-                ...c,
-                weight: normalizedReading?.gas_weight_kg ?? normalizedReading?.current_weight ?? null,
-                valve_pos: normalizedReading?.valve_position ?? null,
-                leak_detect: normalizedReading?.leak_detect ?? null,
-                timestamp: normalizedReading?.created_at ?? null,
-                latest_reading: normalizedReading,
+                ...mergeCylinderLiveReading(c, normalizedReading),
                 _livePulseAt: Date.now()
               }
             : c

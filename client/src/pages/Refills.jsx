@@ -47,12 +47,13 @@ function Modal({ open, title, children, onClose }) {
 
 export default function Refills() {
   const { accessToken } = useAuth();
-  const { cylinders } = useCylinders();
+  const { cylinders, refresh } = useCylinders();
   const cacheKey = '/api/refills';
   const [history, setHistory] = useState(() => getCachedData(cacheKey)?.refills || []);
   const [loading, setLoading] = useState(() => !getCachedData(cacheKey));
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ cylinder_id: '', new_weight_kg: '', refilled_by: '', notes: '' });
+  const [cylinderTypes, setCylinderTypes] = useState([]);
+  const [form, setForm] = useState({ cylinder_id: '', type_id: '' });
 
   useEffect(() => {
     if (!accessToken) return;
@@ -60,8 +61,13 @@ export default function Refills() {
     async function load() {
       if (!getCachedData(cacheKey)) setLoading(true);
       try {
-        const data = await apiJson('/api/refills', { token: accessToken, cacheKey });
-        if (!cancelled) setHistory(data.refills || []);
+        const [refillData, typeData] = await Promise.all([
+          apiJson('/api/refills', { token: accessToken, cacheKey }),
+          apiJson('/api/settings/cylinder-types', { token: accessToken })
+        ]);
+        if (cancelled) return;
+        setHistory(refillData.refills || []);
+        setCylinderTypes(typeData.cylinderTypes || []);
       } catch (e) {
         toast.error(e.message);
       } finally {
@@ -75,38 +81,36 @@ export default function Refills() {
   }, [accessToken]);
 
   const upcoming = useMemo(() => {
-    const list = cylinders
+    return cylinders
       .map((c) => ({
         id: c.id,
         name: c.cylinder_num || c.cylinder_name,
         ward: c.ward,
-        pct: Number(c.latest_reading?.gas_level_pct ?? 0)
+        pct: Number(c.gas_percent ?? c.latest_reading?.gas_level_pct ?? 0)
       }))
       .filter((c) => c.pct > 0)
       .sort((a, b) => a.pct - b.pct)
       .slice(0, 10);
-    return list;
   }, [cylinders]);
 
   const stats = useMemo(() => {
     const now = new Date();
     const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const thisMonth = history.filter((r) => (r.refill_date || '').slice(0, 7) === monthKey);
-    const totalKg = thisMonth.reduce((a, r) => a + Math.max(0, Number(r.new_weight_kg || 0) - Number(r.previous_weight_kg || 0)), 0);
+    const thisMonth = history.filter((r) => (r.refill_time || '').slice(0, 7) === monthKey);
     const byCyl = new Map();
     for (const r of thisMonth) {
-      const k = r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || r.cylinder_num || r.cylinder_name || 'Unknown';
-      byCyl.set(k, (byCyl.get(k) || 0) + 1);
+      const key = r.cylinder?.cylinder_num || 'Unknown';
+      byCyl.set(key, (byCyl.get(key) || 0) + 1);
     }
-    const most = Array.from(byCyl.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || '—';
-    return { count: thisMonth.length, totalKg, most };
+    const most = Array.from(byCyl.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
+    return { count: thisMonth.length, totalKg: 0, most };
   }, [history]);
 
   const perCylinder = useMemo(() => {
     const map = new Map();
     for (const r of history) {
-      const k = r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || r.cylinder_num || r.cylinder_name || 'Unknown';
-      map.set(k, (map.get(k) || 0) + 1);
+      const key = r.cylinder?.cylinder_num || 'Unknown';
+      map.set(key, (map.get(key) || 0) + 1);
     }
     return Array.from(map.entries())
       .map(([name, count]) => ({ name, count }))
@@ -117,25 +121,21 @@ export default function Refills() {
   async function submit(e) {
     e.preventDefault();
     try {
-      const cyl = cylinders.find((c) => c.id === form.cylinder_id);
-      const prevWeight = Number(cyl?.latest_reading?.gas_weight_kg ?? 0);
       await apiJson('/api/refills', {
         token: accessToken,
         method: 'POST',
         queueOffline: true,
         body: {
           cylinder_id: form.cylinder_id,
-          previous_weight_kg: prevWeight,
-          new_weight_kg: Number(form.new_weight_kg),
-          refilled_by: form.refilled_by,
-          notes: form.notes
+          type_id: form.type_id
         }
       });
       toast.success('Refill logged');
       setOpen(false);
-      setForm({ cylinder_id: '', new_weight_kg: '', refilled_by: '', notes: '' });
+      setForm({ cylinder_id: '', type_id: '' });
       const data = await apiJson('/api/refills', { token: accessToken, cacheKey });
       setHistory(data.refills || []);
+      refresh();
     } catch (e) {
       toast.error(e.message);
     }
@@ -160,14 +160,14 @@ export default function Refills() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between bg-surface/80 p-4 rounded-2xl border border-border/50 shadow-sm backdrop-blur">
+      <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-surface/80 p-4 shadow-sm backdrop-blur md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-lg font-semibold text-text">Refill Records</h2>
-          <p className="text-xs text-muted mt-0.5">Track and analyze logged batch refills</p>
+          <p className="mt-0.5 text-xs text-muted">Track and analyze logged refill events</p>
         </div>
         <div className="flex gap-2">
           <ReportDownloadButton onGenerate={() => downloadRefillsReportPdf({ history, upcoming, stats, perCylinder })} />
-          <button onClick={exportCsv} className="rounded-xl border border-border/50 bg-surface px-4 py-2 text-sm font-medium transition hover:border-accent hover:text-accent shadow-sm">
+          <button onClick={exportCsv} className="rounded-xl border border-border/50 bg-surface px-4 py-2 text-sm font-medium shadow-sm transition hover:border-accent hover:text-accent">
             Export CSV
           </button>
           <button onClick={() => setOpen(true)} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90">
@@ -183,7 +183,7 @@ export default function Refills() {
         </div>
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
           <div className="text-xs text-muted">Total kg refilled</div>
-          <div className="mt-2 text-2xl font-semibold">{stats.totalKg.toFixed(1)}</div>
+          <div className="mt-2 text-2xl font-semibold">Auto</div>
         </div>
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur md:col-span-2">
           <div className="text-xs text-muted">Most refilled cylinder</div>
@@ -235,30 +235,24 @@ export default function Refills() {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-border/50 bg-surface/70 shadow-sm backdrop-blur overflow-hidden">
+      <div className="overflow-hidden rounded-2xl border border-border/50 bg-surface/70 shadow-sm backdrop-blur">
         <div className="overflow-x-auto custom-scrollbar">
           <table className="w-full text-left text-sm">
-            <thead className="bg-surface/50 text-xs uppercase text-muted border-b border-border/50">
+            <thead className="border-b border-border/50 bg-surface/50 text-xs uppercase text-muted">
               <tr>
                 <th className="px-5 py-4 font-semibold">Cylinder</th>
+                <th className="px-5 py-4 font-semibold">Type</th>
                 <th className="px-5 py-4 font-semibold">Ward</th>
                 <th className="px-5 py-4 font-semibold">Date</th>
-                <th className="px-5 py-4 font-semibold">Prev kg</th>
-                <th className="px-5 py-4 font-semibold">New kg</th>
-                <th className="px-5 py-4 font-semibold">By</th>
-                <th className="px-5 py-4 font-semibold">Notes</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
               {history.map((r) => (
-                <tr key={r.id} className="hover:bg-accent/5 transition group">
-                  <td className="px-5 py-4 font-medium text-text">{r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || r.cylinder_num || r.cylinder_name}</td>
-                  <td className="px-5 py-4 text-muted">{r.cylinder?.ward || r.ward}</td>
-                  <td className="px-5 py-4 text-muted">{formatDateTime(r.refill_date)}</td>
-                  <td className="px-5 py-4 font-mono">{Number(r.previous_weight_kg ?? 0).toFixed(1)}</td>
-                  <td className="px-5 py-4 font-mono font-medium">{Number(r.new_weight_kg ?? 0).toFixed(1)}</td>
-                  <td className="px-5 py-4 text-muted">{r.refilled_by}</td>
-                  <td className="px-5 py-4 text-muted">{r.notes}</td>
+                <tr key={r.id} className="group transition hover:bg-accent/5">
+                  <td className="px-5 py-4 font-medium text-text">{r.cylinder?.cylinder_num || '-'}</td>
+                  <td className="px-5 py-4 text-muted">{r.type?.type_name || '-'}</td>
+                  <td className="px-5 py-4 text-muted">{r.cylinder?.ward || '-'}</td>
+                  <td className="px-5 py-4 text-muted">{formatDateTime(r.refill_time)}</td>
                 </tr>
               ))}
             </tbody>
@@ -277,7 +271,7 @@ export default function Refills() {
               className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
               required
             >
-              <option value="">Select…</option>
+              <option value="">Select...</option>
               {cylinders.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.cylinder_num || c.cylinder_name} · {c.ward}
@@ -286,33 +280,20 @@ export default function Refills() {
             </select>
           </label>
           <label className="text-xs text-muted">
-            New weight (kg)
-            <input
-              type="number"
-              step="0.1"
-              value={form.new_weight_kg}
-              onChange={(e) => setForm((f) => ({ ...f, new_weight_kg: e.target.value }))}
+            Cylinder Type
+            <select
+              value={form.type_id}
+              onChange={(e) => setForm((f) => ({ ...f, type_id: e.target.value }))}
               className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
               required
-            />
-          </label>
-          <label className="text-xs text-muted">
-            Refilled by
-            <input
-              value={form.refilled_by}
-              onChange={(e) => setForm((f) => ({ ...f, refilled_by: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
-              required
-            />
-          </label>
-          <label className="text-xs text-muted">
-            Notes
-            <textarea
-              value={form.notes}
-              onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
-              rows={3}
-            />
+            >
+              <option value="">Select...</option>
+              {cylinderTypes.map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.type_name} · Full {Number(type.full_weight).toFixed(1)} kg · Empty {Number(type.empty_weight).toFixed(1)} kg
+                </option>
+              ))}
+            </select>
           </label>
           <button className="w-full rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">Save</button>
         </form>
@@ -320,4 +301,3 @@ export default function Refills() {
     </div>
   );
 }
-

@@ -11,40 +11,41 @@ function toCsv(rows) {
     if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };
-  const header = ['id', 'cylinder', 'ward', 'refill_date', 'previous_weight_kg', 'new_weight_kg', 'refilled_by', 'notes'];
+  const header = ['id', 'cylinder', 'type', 'ward', 'refill_time'];
   const lines = [header.join(',')];
   for (const r of rows) {
     lines.push(
       [
         r.id,
-        r.cylinder?.cylinder_num || r.cylinder?.cylinder_name || '',
+        r.cylinder?.cylinder_num || '',
+        r.type?.type_name || '',
         r.cylinder?.ward || '',
-        r.refill_date,
-        r.previous_weight_kg,
-        r.new_weight_kg,
-        r.refilled_by,
-        r.notes
+        r.refill_time
       ].map(esc).join(',')
     );
   }
   return lines.join('\n');
 }
 
+function shapeRefillRow(row) {
+  const { cylinders, cylinder_types, ...rest } = row;
+  return {
+    ...rest,
+    cylinder: cylinders || null,
+    type: cylinder_types || null
+  };
+}
+
 router.get('/', async (_req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
-      .from('refill_history')
-      .select('*, cylinders (cylinder_name, cylinder_num, ward, floor)')
-      .order('refill_date', { ascending: false })
+      .from('refill_logs')
+      .select('*, cylinders (id, cylinder_num, ward, floor, device_id, type_id), cylinder_types (id, type_name, full_weight, empty_weight)')
+      .order('refill_time', { ascending: false })
       .limit(2000);
     if (error) throw new Error(error.message);
 
-    const refills = (data || []).map((r) => {
-      const { cylinders, ...rest } = r;
-      return { ...rest, cylinder: cylinders };
-    });
-
-    res.json({ refills });
+    res.json({ refills: (data || []).map(shapeRefillRow) });
   } catch (e) {
     next(e);
   }
@@ -53,18 +54,14 @@ router.get('/', async (_req, res, next) => {
 router.get('/export', async (_req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
-      .from('refill_history')
-      .select('*, cylinders (cylinder_name, cylinder_num, ward)')
-      .order('refill_date', { ascending: false })
+      .from('refill_logs')
+      .select('*, cylinders (id, cylinder_num, ward), cylinder_types (id, type_name)')
+      .order('refill_time', { ascending: false })
       .limit(5000);
     if (error) throw new Error(error.message);
-    const refills = (data || []).map((r) => {
-      const { cylinders, ...rest } = r;
-      return { ...rest, cylinder: cylinders };
-    });
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.send(toCsv(refills));
+    res.send(toCsv((data || []).map(shapeRefillRow)));
   } catch (e) {
     next(e);
   }
@@ -72,20 +69,48 @@ router.get('/export', async (_req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const payload = {
-      cylinder_id: req.body.cylinder_id,
-      refilled_by: req.body.refilled_by,
-      previous_weight_kg: req.body.previous_weight_kg,
-      new_weight_kg: req.body.new_weight_kg,
-      notes: req.body.notes
-    };
+    const cylinderId = String(req.body?.cylinder_id || '').trim();
+    const typeId = String(req.body?.type_id || '').trim();
 
-    if (!payload.cylinder_id) return res.status(400).json({ error: 'Missing cylinder_id' });
+    if (!cylinderId) return res.status(400).json({ error: 'Missing cylinder_id' });
+    if (!typeId) return res.status(400).json({ error: 'Missing type_id' });
 
-    const { data, error } = await supabaseAdmin.from('refill_history').insert(payload).select('*').single();
+    const { data: cylinder, error: cylinderError } = await supabaseAdmin
+      .from('cylinders')
+      .select('id')
+      .eq('id', cylinderId)
+      .maybeSingle();
+    if (cylinderError) throw new Error(cylinderError.message);
+    if (!cylinder) return res.status(404).json({ error: 'Cylinder not found' });
+
+    const { data: type, error: typeError } = await supabaseAdmin
+      .from('cylinder_types')
+      .select('id')
+      .eq('id', typeId)
+      .maybeSingle();
+    if (typeError) throw new Error(typeError.message);
+    if (!type) return res.status(404).json({ error: 'Cylinder type not found' });
+
+    const refillTime = new Date().toISOString();
+
+    const { data, error } = await supabaseAdmin
+      .from('refill_logs')
+      .insert({
+        cylinder_id: cylinderId,
+        type_id: typeId,
+        refill_time: refillTime
+      })
+      .select('*, cylinders (id, cylinder_num, ward, floor, device_id, type_id), cylinder_types (id, type_name, full_weight, empty_weight)')
+      .single();
     if (error) throw new Error(error.message);
 
-    res.status(201).json({ refill: data });
+    const { error: updateError } = await supabaseAdmin
+      .from('cylinders')
+      .update({ type_id: typeId })
+      .eq('id', cylinderId);
+    if (updateError) throw new Error(updateError.message);
+
+    res.status(201).json({ refill: shapeRefillRow(data) });
   } catch (e) {
     next(e);
   }

@@ -14,12 +14,6 @@ const DEFAULT_THRESHOLDS = {
   danger_weight_kg: 5
 };
 
-const DEFAULT_CYLINDER_TYPE_WEIGHTS = {
-  'B-type 10L': 14,
-  'D-type 46L': 16,
-  'Jumbo 47L': 18
-};
-
 async function getJsonSetting(settingKey, defaults) {
   const { data, error } = await supabaseAdmin
     .from('app_settings')
@@ -67,34 +61,72 @@ router.patch('/thresholds', async (req, res, next) => {
   }
 });
 
-router.get('/cylinder-type-weights', async (_req, res, next) => {
+router.get('/cylinder-types', async (_req, res, next) => {
   try {
-    const weights = await getJsonSetting('cylinder_type_weights', DEFAULT_CYLINDER_TYPE_WEIGHTS);
-    res.json({ weights });
+    const { data, error } = await supabaseAdmin
+      .from('cylinder_types')
+      .select('*')
+      .order('created_at', { ascending: true });
+    if (error) throw new Error(error.message);
+    res.json({ cylinderTypes: data || [] });
   } catch (e) {
     next(e);
   }
 });
 
-router.patch('/cylinder-type-weights', async (req, res, next) => {
+router.post('/cylinder-types', async (req, res, next) => {
   try {
-    const current = await getJsonSetting('cylinder_type_weights', DEFAULT_CYLINDER_TYPE_WEIGHTS);
-    const nextWeights = { ...current };
+    const type_name = String(req.body?.type_name || '').trim();
+    const full_weight = Number(req.body?.full_weight);
+    const empty_weight = Number(req.body?.empty_weight);
 
-    for (const key of Object.keys(current)) {
-      if (key in req.body) nextWeights[key] = Number(req.body[key]);
-    }
+    if (!type_name) return res.status(400).json({ error: 'Missing type_name' });
+    if (!Number.isFinite(full_weight)) return res.status(400).json({ error: 'Missing full_weight' });
+    if (!Number.isFinite(empty_weight)) return res.status(400).json({ error: 'Missing empty_weight' });
 
-    const { error } = await supabaseAdmin
-      .from('app_settings')
-      .upsert({
-        setting_key: 'cylinder_type_weights',
-        setting_value: nextWeights,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'setting_key' });
+    const { data, error } = await supabaseAdmin
+      .from('cylinder_types')
+      .insert({ type_name, full_weight, empty_weight })
+      .select('*')
+      .single();
     if (error) throw new Error(error.message);
 
-    res.json({ ok: true, weights: nextWeights });
+    res.status(201).json({ cylinderType: data });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.patch('/cylinder-types/:id', async (req, res, next) => {
+  try {
+    const patch = {};
+    if ('type_name' in req.body) patch.type_name = String(req.body.type_name || '').trim();
+    if ('full_weight' in req.body) patch.full_weight = Number(req.body.full_weight);
+    if ('empty_weight' in req.body) patch.empty_weight = Number(req.body.empty_weight);
+
+    const { data, error } = await supabaseAdmin
+      .from('cylinder_types')
+      .update(patch)
+      .eq('id', req.params.id)
+      .select('*')
+      .single();
+    if (error) throw new Error(error.message);
+
+    res.json({ cylinderType: data });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.delete('/cylinder-types/:id', async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from('cylinder_types')
+      .delete()
+      .eq('id', req.params.id);
+    if (error) throw new Error(error.message);
+
+    res.json({ ok: true });
   } catch (e) {
     next(e);
   }

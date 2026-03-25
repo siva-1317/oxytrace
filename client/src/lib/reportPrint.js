@@ -334,7 +334,7 @@ export function downloadRefillsReportPdf({ history, upcoming, stats, perCylinder
     subtitle: 'Refill history, projected needs, and batch activity snapshot',
     stats: [
       { label: 'Refills This Month', value: String(stats?.count || 0) },
-      { label: 'Total Refilled', value: `${formatNumber(stats?.totalKg, 1)} kg` },
+      { label: 'Total Refilled', value: stats?.totalKg ? `${formatNumber(stats?.totalKg, 1)} kg` : 'Auto' },
       { label: 'Most Refilled Cylinder', value: stats?.most || '-' },
       { label: 'History Rows', value: String(history?.length || 0) }
     ],
@@ -358,11 +358,9 @@ export function downloadRefillsReportPdf({ history, upcoming, stats, perCylinder
         body: renderTable(
           [
             { label: 'Cylinder', render: (row) => row.cylinder?.cylinder_num || row.cylinder?.cylinder_name || row.cylinder_num || row.cylinder_name || '-' },
+            { label: 'Type', render: (row) => row.type?.type_name || '-' },
             { label: 'Ward', render: (row) => row.cylinder?.ward || row.ward || '-' },
-            { label: 'Date', render: (row) => formatDateTime(row.refill_date) },
-            { label: 'Prev kg', render: (row) => formatNumber(row.previous_weight_kg, 1) },
-            { label: 'New kg', render: (row) => formatNumber(row.new_weight_kg, 1) },
-            { label: 'By', key: 'refilled_by' }
+            { label: 'Date', render: (row) => formatDateTime(row.refill_time) }
           ],
           (history || []).slice(0, 15)
         )
@@ -491,11 +489,10 @@ export function downloadCylinderDetailReportPdf({ detail, refills, lineSeries, d
         title: 'Refill History',
         body: renderTable(
           [
-            { label: 'Date', render: (row) => formatDateTime(row.refill_date) },
-            { label: 'Prev kg', render: (row) => formatNumber(row.previous_weight_kg, 1) },
-            { label: 'New kg', render: (row) => formatNumber(row.new_weight_kg, 1) },
-            { label: 'By', key: 'refilled_by' },
-            { label: 'Notes', key: 'notes' }
+            { label: 'Date', render: (row) => formatDateTime(row.refill_time) },
+            { label: 'Type', render: (row) => row.type?.type_name || '-' },
+            { label: 'Full', render: (row) => row.type?.full_weight == null ? '-' : formatNumber(row.type.full_weight, 1) },
+            { label: 'Empty', render: (row) => row.type?.empty_weight == null ? '-' : formatNumber(row.type.empty_weight, 1) }
           ],
           (refills || []).slice(0, 12)
         )

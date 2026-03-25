@@ -18,20 +18,21 @@ function wardColor(ward) {
 export default function CylinderCard({ cylinder, thresholds }) {
   const nav = useNavigate();
   const r = cylinder.latest_reading || {};
-  const pct = Number(r.gas_level_pct ?? 0);
+  const pct = Number(cylinder.gas_percent ?? r.gas_level_pct ?? 0);
   const isValveOpen = r.valve_open == null ? null : Boolean(r.valve_open);
   const livePulse = cylinder._livePulseAt && Date.now() - cylinder._livePulseAt < 5000;
   const deviceId = cylinder.device_id || cylinder.esp32_device_id || null;
   const lastSeen = r.created_at || cylinder.timestamp || null;
-  const weightKg = r.gas_weight_kg ?? r.current_weight ?? cylinder.weight ?? null;
-  const leakagePpm = r.leakage_ppm ?? null;
+  const currentWeightKg = cylinder.current_weight ?? r.current_weight ?? null;
+  const gasWeightKg = cylinder.gas_weight ?? r.gas_weight_kg ?? null;
+  const leakDetected = cylinder.leak_detect ?? r.leak_detect ?? null;
 
   const borderPulse = useMemo(
     () => (cylinder._hasAlert ? 'ring-2 ring-danger/30' : ''),
     [cylinder._hasAlert]
   );
   const gasTone = pct <= Number(thresholds?.danger_gas_pct ?? 10) ? 'text-danger' : pct <= Number(thresholds?.low_gas_pct ?? 20) ? 'text-warning' : 'text-success';
-  const leakTone = Number(leakagePpm ?? 0) >= Number(thresholds?.leak_danger_ppm ?? 200) ? 'text-danger' : Number(leakagePpm ?? 0) >= Number(thresholds?.leak_warn_ppm ?? 120) ? 'text-warning' : 'text-success';
+  const leakTone = leakDetected ? 'text-danger' : 'text-success';
 
   return (
     <motion.button
@@ -57,6 +58,9 @@ export default function CylinderCard({ cylinder, thresholds }) {
           </div>
           <div className="mt-1 text-xs text-muted">
             Device: <span className="font-mono text-text/80">{deviceId || 'Not mapped'}</span>
+          </div>
+          <div className="mt-1 text-xs text-muted">
+            Type: <span className="text-text/80">{cylinder.type_name || 'Not set'}</span>
           </div>
           <div className="mt-1 text-xs text-muted">
             Updated: <span className="text-text/80">{lastSeen ? formatDateTime(lastSeen) : 'No live data'}</span>
@@ -95,24 +99,30 @@ export default function CylinderCard({ cylinder, thresholds }) {
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+      <div className="mt-4 grid grid-cols-4 gap-2 text-xs">
         <div className="rounded-xl border border-border/50 bg-card/30 p-2">
           <div className="flex items-center gap-1 text-muted">
-            <Gauge size={14} /> Weight
+            <Gauge size={14} /> Current
           </div>
-          <div className="mt-1 font-mono text-sm text-text/90">{weightKg == null ? '--' : `${Number(weightKg).toFixed(1)} kg`}</div>
+          <div className="mt-1 font-mono text-sm text-text/90">{currentWeightKg == null ? '--' : `${Number(currentWeightKg).toFixed(1)} kg`}</div>
         </div>
         <div className="rounded-xl border border-border/50 bg-card/30 p-2">
           <div className="flex items-center gap-1 text-muted">
-            <Flame size={14} /> Leakage
+            <Droplets size={14} /> Gas
           </div>
-          <div className="mt-1 font-mono text-sm text-text/90">{leakagePpm == null ? '--' : `${Number(leakagePpm).toFixed(0)} ppm`}</div>
+          <div className="mt-1 font-mono text-sm text-text/90">{gasWeightKg == null ? '--' : `${Number(gasWeightKg).toFixed(1)} kg`}</div>
         </div>
         <div className="rounded-xl border border-border/50 bg-card/30 p-2">
           <div className="flex items-center gap-1 text-muted">
-            <Droplets size={14} /> Gas Level
+            <Flame size={14} /> Leak
           </div>
-          <div className="mt-1 font-mono text-sm text-text/90">{r.gas_level_pct == null ? '--' : `${pct.toFixed(1)}%`}</div>
+          <div className={`mt-1 font-mono text-sm ${leakTone}`}>{leakDetected == null ? '--' : leakDetected ? 'Detected' : 'Clear'}</div>
+        </div>
+        <div className="rounded-xl border border-border/50 bg-card/30 p-2">
+          <div className="flex items-center gap-1 text-muted">
+            <Droplets size={14} /> Percent
+          </div>
+          <div className="mt-1 font-mono text-sm text-text/90">{cylinder.gas_percent == null && r.gas_level_pct == null ? '--' : `${pct.toFixed(1)}%`}</div>
         </div>
       </div>
     </motion.button>
