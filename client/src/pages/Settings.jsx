@@ -3,8 +3,8 @@ import toast from 'react-hot-toast';
 import { Save, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useCylinders } from '../hooks/useCylinders.js';
-import { apiJson, formatDateTime } from '../lib/api.js';
-import { loadHospitalProfile, saveHospitalProfile } from '../lib/hospitalProfile.js';
+import { apiJson, formatDateTime, notifyDataRefresh } from '../lib/api.js';
+import { defaultHospitalProfile, loadHospitalProfile, syncHospitalProfile } from '../lib/hospitalProfile.js';
 
 const tabs = [
   { key: 'profile', label: 'Hospital Details' },
@@ -25,20 +25,25 @@ export default function Settings() {
     leak_warn_ppm: 120,
     leak_danger_ppm: 200,
     low_weight_kg: 10,
-    danger_weight_kg: 5
+    danger_weight_kg: 5,
+    low_in_use_cylinders: 2
   });
   const [hospitalProfile, setHospitalProfile] = useState(() => loadHospitalProfile());
   const [cylinderTypes, setCylinderTypes] = useState([]);
   const [typeDrafts, setTypeDrafts] = useState({});
   const [newType, setNewType] = useState({ type_name: '', full_weight: '', empty_weight: '' });
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [aiSaving, setAiSaving] = useState(false);
 
   const ingestUrl = `${import.meta.env.VITE_API_URL}/api/readings/ingest`;
-
-  const ai = useMemo(() => ({
-    key: localStorage.getItem('oxytrace-gemini-key') || '',
-    model: localStorage.getItem('oxytrace-gemini-model') || 'gemini-3-flash',
-    temp: Number(localStorage.getItem('oxytrace-gemini-temp') || 0.4)
-  }), []);
+  const ai = useMemo(
+    () => ({
+      key: localStorage.getItem('oxytrace-gemini-key') || '',
+      model: localStorage.getItem('oxytrace-gemini-model') || 'gemini-2.5-flash',
+      temp: Number(localStorage.getItem('oxytrace-gemini-temp') || 0.4)
+    }),
+    []
+  );
 
   const [aiKey, setAiKey] = useState(ai.key);
   const [aiModel, setAiModel] = useState(ai.model);
@@ -50,15 +55,31 @@ export default function Settings() {
 
     async function loadSettings() {
       try {
-        const [thresholdRes, typeRes] = await Promise.all([
+        const [thresholdRes, typeRes, profileRes, aiRes] = await Promise.all([
           apiJson('/api/settings/thresholds', { token: accessToken }),
-          apiJson('/api/settings/cylinder-types', { token: accessToken })
+          apiJson('/api/settings/cylinder-types', { token: accessToken }),
+          apiJson('/api/settings/hospital-profile', { token: accessToken }),
+          apiJson('/api/settings/ai-config', { token: accessToken })
         ]);
         if (!cancelled && thresholdRes?.thresholds) {
           setThresholds((prev) => ({ ...prev, ...thresholdRes.thresholds }));
         }
         if (!cancelled) {
           setCylinderTypes(typeRes?.cylinderTypes || []);
+          if (profileRes?.hospitalProfile) {
+            syncHospitalProfile(profileRes.hospitalProfile);
+            setHospitalProfile({ ...defaultHospitalProfile, ...profileRes.hospitalProfile });
+          } else {
+            setHospitalProfile({ ...defaultHospitalProfile, ...loadHospitalProfile() });
+          }
+          if (aiRes?.aiConfig) {
+            setAiKey(aiRes.aiConfig.api_key || '');
+            setAiModel(aiRes.aiConfig.model || 'gemini-2.5-flash');
+            setAiTemp(Number(aiRes.aiConfig.temperature ?? 0.4));
+            localStorage.setItem('oxytrace-gemini-key', aiRes.aiConfig.api_key || '');
+            localStorage.setItem('oxytrace-gemini-model', aiRes.aiConfig.model || 'gemini-2.5-flash');
+            localStorage.setItem('oxytrace-gemini-temp', String(aiRes.aiConfig.temperature ?? 0.4));
+          }
         }
       } catch (e) {
         toast.error(e.message);
@@ -103,6 +124,7 @@ export default function Settings() {
         queueOffline: true
       });
       toast.success('Thresholds saved');
+      notifyDataRefresh(['settings', 'thresholds', 'dashboard', 'cylinders']);
     } catch (e) {
       toast.error(e.message);
     }
@@ -123,6 +145,7 @@ export default function Settings() {
       setNewType({ type_name: '', full_weight: '', empty_weight: '' });
       const res = await apiJson('/api/settings/cylinder-types', { token: accessToken });
       setCylinderTypes(res.cylinderTypes || []);
+      notifyDataRefresh(['settings', 'cylinders', 'refills']);
     } catch (e) {
       toast.error(e.message);
     }
@@ -150,6 +173,7 @@ export default function Settings() {
       const res = await apiJson('/api/settings/cylinder-types', { token: accessToken });
       setCylinderTypes(res.cylinderTypes || []);
       refresh();
+      notifyDataRefresh(['settings', 'cylinders', 'refills']);
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -167,21 +191,72 @@ export default function Settings() {
       toast.success('Cylinder type deleted');
       setCylinderTypes((prev) => prev.filter((type) => type.id !== typeId));
       refresh();
+      notifyDataRefresh(['settings', 'cylinders', 'refills']);
     } catch (e) {
       toast.error(e.message);
     }
   }
 
-  function saveHospitalDetails() {
-    saveHospitalProfile(hospitalProfile);
-    toast.success('Hospital details saved');
+  async function saveHospitalDetails() {
+    setProfileSaving(true);
+    try {
+      const payload = {
+        hospital_name: hospitalProfile.hospital_name,
+        contact_name: hospitalProfile.contact_name,
+        email: hospitalProfile.email,
+        phone: hospitalProfile.phone,
+        address_line_1: hospitalProfile.address_line_1,
+        address_line_2: hospitalProfile.address_line_2,
+        city: hospitalProfile.city,
+        state: hospitalProfile.state,
+        postal_code: hospitalProfile.postal_code,
+        country: hospitalProfile.country
+      };
+      const res = await apiJson('/api/settings/hospital-profile', {
+        token: accessToken,
+        method: 'PATCH',
+        body: payload,
+        queueOffline: true
+      });
+      syncHospitalProfile(res?.hospitalProfile || payload);
+      setHospitalProfile({ ...defaultHospitalProfile, ...(res?.hospitalProfile || payload) });
+      toast.success('Hospital details saved');
+      notifyDataRefresh(['settings']);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setProfileSaving(false);
+    }
   }
 
-  function saveAI() {
-    localStorage.setItem('oxytrace-gemini-key', aiKey);
-    localStorage.setItem('oxytrace-gemini-model', aiModel);
-    localStorage.setItem('oxytrace-gemini-temp', String(aiTemp));
-    toast.success('AI settings saved (local)');
+  async function saveAI() {
+    setAiSaving(true);
+    try {
+      const res = await apiJson('/api/settings/ai-config', {
+        token: accessToken,
+        method: 'PATCH',
+        body: {
+          api_key: aiKey,
+          model: aiModel,
+          temperature: aiTemp
+        },
+        queueOffline: true
+      });
+      const nextConfig = res?.aiConfig || {
+        api_key: aiKey,
+        model: aiModel,
+        temperature: aiTemp
+      };
+      localStorage.setItem('oxytrace-gemini-key', nextConfig.api_key || '');
+      localStorage.setItem('oxytrace-gemini-model', nextConfig.model || 'gemini-2.5-flash');
+      localStorage.setItem('oxytrace-gemini-temp', String(nextConfig.temperature ?? 0.4));
+      toast.success('AI settings saved');
+      notifyDataRefresh(['settings']);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setAiSaving(false);
+    }
   }
 
   async function testAI() {
@@ -234,9 +309,37 @@ export default function Settings() {
               Email
               <input value={hospitalProfile.email} onChange={(e) => setHospitalProfile((p) => ({ ...p, email: e.target.value }))} placeholder={user?.email || ''} type="email" className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
             </label>
+            <label className="text-xs text-muted">
+              Phone
+              <input value={hospitalProfile.phone} onChange={(e) => setHospitalProfile((p) => ({ ...p, phone: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs text-muted">
+              City
+              <input value={hospitalProfile.city} onChange={(e) => setHospitalProfile((p) => ({ ...p, city: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Address line 1
+              <input value={hospitalProfile.address_line_1} onChange={(e) => setHospitalProfile((p) => ({ ...p, address_line_1: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Address line 2
+              <input value={hospitalProfile.address_line_2} onChange={(e) => setHospitalProfile((p) => ({ ...p, address_line_2: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs text-muted">
+              State
+              <input value={hospitalProfile.state} onChange={(e) => setHospitalProfile((p) => ({ ...p, state: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs text-muted">
+              Postal code
+              <input value={hospitalProfile.postal_code} onChange={(e) => setHospitalProfile((p) => ({ ...p, postal_code: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+            </label>
+            <label className="text-xs text-muted">
+              Country
+              <input value={hospitalProfile.country} onChange={(e) => setHospitalProfile((p) => ({ ...p, country: e.target.value }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
+            </label>
           </div>
           <div className="mt-4">
-            <button onClick={saveHospitalDetails} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">Save hospital details</button>
+            <button onClick={saveHospitalDetails} disabled={profileSaving} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2 disabled:opacity-60">{profileSaving ? 'Saving...' : 'Save hospital details'}</button>
           </div>
         </div>
       ) : null}
@@ -310,13 +413,81 @@ export default function Settings() {
       {tab === 'thresholds' ? (
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
           <div className="text-lg font-semibold">Alert threshold controls</div>
-          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {Object.keys(thresholds).map((key) => (
-              <label key={key} className="text-xs text-muted">
-                {key}
-                <input type="number" step="0.1" value={thresholds[key]} onChange={(e) => setThresholds((t) => ({ ...t, [key]: Number(e.target.value) }))} className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm" />
-              </label>
-            ))}
+          <p className="mt-1 text-sm text-muted">Control when stock and cylinder alerts should appear across dashboard, alerts, and stock pages.</p>
+          <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
+            <div className="rounded-2xl border border-border/40 bg-card/20 p-4">
+              <div className="text-sm font-semibold text-text">Cylinder Gas Alerts</div>
+              <div className="mt-1 text-xs text-muted">Alert when a cylinder gas level drops below your operating thresholds.</div>
+              <div className="mt-4 space-y-3">
+                <label className="text-xs text-muted">
+                  Warning below (%)
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={thresholds.low_gas_pct}
+                    onChange={(e) => setThresholds((t) => ({ ...t, low_gas_pct: Number(e.target.value) }))}
+                    className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-xs text-muted">
+                  Critical below (%)
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={thresholds.danger_gas_pct}
+                    onChange={(e) => setThresholds((t) => ({ ...t, danger_gas_pct: Number(e.target.value) }))}
+                    className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border/40 bg-card/20 p-4">
+              <div className="text-sm font-semibold text-text">Stock Usage Alerts</div>
+              <div className="mt-1 text-xs text-muted">Alert when the available in-use cylinder pool becomes too low for operations.</div>
+              <div className="mt-4 space-y-3">
+                <label className="text-xs text-muted">
+                  Low in-use cylinders
+                  <input
+                    type="number"
+                    step="1"
+                    value={thresholds.low_in_use_cylinders}
+                    onChange={(e) => setThresholds((t) => ({ ...t, low_in_use_cylinders: Number(e.target.value) }))}
+                    className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  />
+                </label>
+                <div className="rounded-xl border border-border/40 bg-background/40 px-3 py-2 text-xs text-muted">
+                  Per-cylinder-type full stock reorder levels are managed in the Stock Inventory page.
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border/40 bg-card/20 p-4">
+              <div className="text-sm font-semibold text-text">Weight Safety</div>
+              <div className="mt-1 text-xs text-muted">Weight-based safety checks are still available here for cylinder monitoring.</div>
+              <div className="mt-4 grid grid-cols-1 gap-3">
+<label className="text-xs text-muted">
+                  Weight warning (kg)
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={thresholds.low_weight_kg}
+                    onChange={(e) => setThresholds((t) => ({ ...t, low_weight_kg: Number(e.target.value) }))}
+                    className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-xs text-muted">
+                  Weight critical (kg)
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={thresholds.danger_weight_kg}
+                    onChange={(e) => setThresholds((t) => ({ ...t, danger_weight_kg: Number(e.target.value) }))}
+                    className="mt-1 w-full rounded-xl border border-border/60 bg-surface/60 px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
           <div className="mt-4">
             <button onClick={saveThresholds} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">Save threshold settings</button>
@@ -373,7 +544,7 @@ export default function Settings() {
             </label>
           </div>
           <div className="mt-4 flex gap-2">
-            <button onClick={saveAI} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2">Save</button>
+            <button onClick={saveAI} disabled={aiSaving} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2 disabled:opacity-60">{aiSaving ? 'Saving...' : 'Save'}</button>
             <button onClick={testAI} className="rounded-xl border border-border/60 bg-surface/60 px-4 py-2 text-sm transition hover:border-accent/40">Test connection</button>
           </div>
         </div>
@@ -381,3 +552,5 @@ export default function Settings() {
     </div>
   );
 }
+
+

@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useCylinders } from '../hooks/useCylinders.js';
-import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
+import { apiJson, formatDateTime, getCachedData, subscribeDataRefresh } from '../lib/api.js';
 import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
 import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
 import { downloadRefillsReportPdf } from '../lib/reportPrint.js';
@@ -55,29 +55,43 @@ export default function Refills() {
   const [cylinderTypes, setCylinderTypes] = useState([]);
   const [form, setForm] = useState({ cylinder_id: '', type_id: '' });
 
+  async function loadData() {
+    if (!accessToken) return;
+    if (!getCachedData(cacheKey)) setLoading(true);
+    try {
+      const [refillData, typeData] = await Promise.all([
+        apiJson('/api/refills', { token: accessToken, cacheKey }),
+        apiJson('/api/settings/cylinder-types', { token: accessToken })
+      ]);
+      setHistory(refillData.refills || []);
+      setCylinderTypes(typeData.cylinderTypes || []);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
-    async function load() {
-      if (!getCachedData(cacheKey)) setLoading(true);
-      try {
-        const [refillData, typeData] = await Promise.all([
-          apiJson('/api/refills', { token: accessToken, cacheKey }),
-          apiJson('/api/settings/cylinder-types', { token: accessToken })
-        ]);
-        if (cancelled) return;
-        setHistory(refillData.refills || []);
-        setCylinderTypes(typeData.cylinderTypes || []);
-      } catch (e) {
-        toast.error(e.message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
+    loadData().catch(() => {});
+    const timer = setInterval(() => {
+      if (!cancelled) loadData().catch(() => {});
+    }, 25000);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
+  }, [accessToken]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeDataRefresh(({ tags }) => {
+      if (tags.some((tag) => ['refills', 'settings', 'cylinders', 'dashboard'].includes(tag))) {
+        loadData().catch(() => {});
+      }
+    });
+    return unsubscribe;
   }, [accessToken]);
 
   const upcoming = useMemo(() => {
@@ -103,7 +117,11 @@ export default function Refills() {
       byCyl.set(key, (byCyl.get(key) || 0) + 1);
     }
     const most = Array.from(byCyl.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
-    return { count: thisMonth.length, totalKg: 0, most };
+    const totalKg = thisMonth.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.type?.full_weight || 0) - Number(row.type?.empty_weight || 0)),
+      0
+    );
+    return { count: thisMonth.length, totalKg, most };
   }, [history]);
 
   const perCylinder = useMemo(() => {
@@ -183,7 +201,7 @@ export default function Refills() {
         </div>
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur">
           <div className="text-xs text-muted">Total kg refilled</div>
-          <div className="mt-2 text-2xl font-semibold">Auto</div>
+          <div className="mt-2 text-2xl font-semibold">{stats.totalKg.toFixed(1)} kg</div>
         </div>
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur md:col-span-2">
           <div className="text-xs text-muted">Most refilled cylinder</div>

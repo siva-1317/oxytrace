@@ -1,6 +1,7 @@
 import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
+import { DEFAULT_AI_SETTINGS } from '../utils/aiConfig.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -11,7 +12,21 @@ const DEFAULT_THRESHOLDS = {
   leak_warn_ppm: 120,
   leak_danger_ppm: 200,
   low_weight_kg: 10,
-  danger_weight_kg: 5
+  danger_weight_kg: 5,
+  low_in_use_cylinders: 2
+};
+
+const DEFAULT_HOSPITAL_PROFILE = {
+  hospital_name: 'OxyTrace Medical Center',
+  contact_name: '',
+  email: '',
+  phone: '',
+  address_line_1: '',
+  address_line_2: '',
+  city: '',
+  state: '',
+  postal_code: '',
+  country: 'India'
 };
 
 async function getJsonSetting(settingKey, defaults) {
@@ -69,6 +84,78 @@ router.get('/cylinder-types', async (_req, res, next) => {
       .order('created_at', { ascending: true });
     if (error) throw new Error(error.message);
     res.json({ cylinderTypes: data || [] });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/hospital-profile', async (_req, res, next) => {
+  try {
+    const hospitalProfile = await getJsonSetting('hospital_profile', DEFAULT_HOSPITAL_PROFILE);
+    res.json({ hospitalProfile });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.patch('/hospital-profile', async (req, res, next) => {
+  try {
+    const current = await getJsonSetting('hospital_profile', DEFAULT_HOSPITAL_PROFILE);
+    const nextProfile = {
+      ...current,
+      ...Object.fromEntries(
+        Object.keys(DEFAULT_HOSPITAL_PROFILE).map((key) => [key, String(req.body?.[key] ?? current[key] ?? '').trim()])
+      )
+    };
+
+    const { error } = await supabaseAdmin.from('app_settings').upsert(
+      {
+        setting_key: 'hospital_profile',
+        setting_value: nextProfile,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'setting_key' }
+    );
+    if (error) throw new Error(error.message);
+
+    res.json({ ok: true, hospitalProfile: nextProfile });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/ai-config', async (_req, res, next) => {
+  try {
+    const aiConfig = await getJsonSetting('ai_settings', DEFAULT_AI_SETTINGS);
+    res.json({ aiConfig });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.patch('/ai-config', async (req, res, next) => {
+  try {
+    const current = await getJsonSetting('ai_settings', DEFAULT_AI_SETTINGS);
+    const nextConfig = {
+      ...current,
+      model: String(req.body?.model ?? current.model ?? DEFAULT_AI_SETTINGS.model).trim() || DEFAULT_AI_SETTINGS.model,
+      api_key: String(req.body?.api_key ?? current.api_key ?? '').trim(),
+      temperature: Number.isFinite(Number(req.body?.temperature))
+        ? Number(req.body.temperature)
+        : Number(current.temperature ?? DEFAULT_AI_SETTINGS.temperature)
+    };
+
+    const { error } = await supabaseAdmin.from('app_settings').upsert(
+      {
+        setting_key: 'ai_settings',
+        setting_value: nextConfig,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'setting_key' }
+    );
+    if (error) throw new Error(error.message);
+
+    res.json({ ok: true, aiConfig: nextConfig });
   } catch (e) {
     next(e);
   }

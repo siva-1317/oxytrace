@@ -4,6 +4,7 @@ import { Droplets, Flame, Gauge, Lock, LockOpen } from 'lucide-react';
 import GasLevelBar from './GasLevelBar.jsx';
 import { useNavigate } from 'react-router-dom';
 import { formatDateTime } from '../lib/api.js';
+import { parseBooleanFlag } from '../lib/booleanFlag.js';
 
 function wardColor(ward) {
   const w = (ward || '').toLowerCase();
@@ -19,13 +20,13 @@ export default function CylinderCard({ cylinder, thresholds }) {
   const nav = useNavigate();
   const r = cylinder.latest_reading || {};
   const pct = Number(cylinder.gas_percent ?? r.gas_level_pct ?? 0);
-  const isValveOpen = r.valve_open == null ? null : Boolean(r.valve_open);
+  const isValveOpen = parseBooleanFlag(r.valve_open);
   const livePulse = cylinder._livePulseAt && Date.now() - cylinder._livePulseAt < 5000;
   const deviceId = cylinder.device_id || cylinder.esp32_device_id || null;
   const lastSeen = r.created_at || cylinder.timestamp || null;
   const currentWeightKg = cylinder.current_weight ?? r.current_weight ?? null;
   const gasWeightKg = cylinder.gas_weight ?? r.gas_weight_kg ?? null;
-  const leakDetected = cylinder.leak_detect ?? r.leak_detect ?? null;
+  const leakDetected = parseBooleanFlag(cylinder.leak_detect ?? r.leak_detect);
 
   const borderPulse = useMemo(
     () => (cylinder._hasAlert ? 'ring-2 ring-danger/30' : ''),
@@ -93,10 +94,10 @@ export default function CylinderCard({ cylinder, thresholds }) {
 
       <div className="mt-4">
         <GasLevelBar pct={pct} />
-        <div className="mt-2 flex items-center justify-between text-[11px]">
+        {/* <div className="mt-2 flex items-center justify-between text-[11px]">
           <span className={gasTone}>Gas threshold: {thresholds?.low_gas_pct ?? 20}% / {thresholds?.danger_gas_pct ?? 10}%</span>
           <span className={leakTone}>Leak threshold: {thresholds?.leak_warn_ppm ?? 120} / {thresholds?.leak_danger_ppm ?? 200} ppm</span>
-        </div>
+        </div> */}
       </div>
 
       <div className="mt-4 grid grid-cols-4 gap-2 text-xs">

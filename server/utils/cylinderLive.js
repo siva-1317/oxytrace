@@ -1,3 +1,5 @@
+import { parseBooleanFlag } from './booleanFlag.js';
+
 function clampPercent(value) {
   if (value == null || Number.isNaN(Number(value))) return null;
   return Math.max(0, Math.min(100, Number(value)));
@@ -38,31 +40,18 @@ export function buildLiveReading(telemetryRow, cylinderType = null) {
     gas_weight_kg: gasWeight,
     gas_level_pct: gasPercent,
     valve_position:
-      telemetryRow.valve_position != null
-        ? Boolean(telemetryRow.valve_position)
-        : telemetryRow.valve_open != null
-          ? Boolean(telemetryRow.valve_open)
-          : null,
+      parseBooleanFlag(telemetryRow.valve_position) ??
+      parseBooleanFlag(telemetryRow.valve_open),
     valve_open:
-      telemetryRow.valve_position != null
-        ? Boolean(telemetryRow.valve_position)
-        : telemetryRow.valve_open != null
-          ? Boolean(telemetryRow.valve_open)
-          : null,
+      parseBooleanFlag(telemetryRow.valve_position) ??
+      parseBooleanFlag(telemetryRow.valve_open),
     leak_detect:
-      telemetryRow.leak_detect != null
-        ? Boolean(telemetryRow.leak_detect)
-        : telemetryRow.leakage_ppm != null
-          ? Number(telemetryRow.leakage_ppm) > 0
-          : null,
+      parseBooleanFlag(telemetryRow.leak_detect) ??
+      (telemetryRow.leakage_ppm != null ? Number(telemetryRow.leakage_ppm) > 0 : null),
     leakage_ppm:
       telemetryRow.leakage_ppm != null
         ? Number(telemetryRow.leakage_ppm)
-        : telemetryRow.leak_detect == null
-          ? null
-          : telemetryRow.leak_detect
-            ? 200
-            : 0,
+        : null,
     created_at: telemetryRow.created_at || telemetryRow.timestamp || null
   };
 }

@@ -9,27 +9,19 @@ import {
   listModels,
   testGemini
 } from '../services/geminiService.js';
+import { resolveAiOptions } from '../utils/aiConfig.js';
 import { filterRowsByPlacedSourceId, isPlacedSourceId } from '../utils/workspaceScope.js';
 import { shapeCylinderRow } from '../utils/cylinderShape.js';
+import { deviceKeysMatch } from '../utils/deviceMatch.js';
+import { normalizeTelemetryRow } from '../utils/telemetryNormalize.js';
 
 const router = express.Router();
 router.use(requireAuth);
 
-function overrides(req) {
-  const apiKey = req.headers['x-gemini-key'];
-  const model = req.headers['x-gemini-model'];
-  const temperature =
-    req.headers['x-gemini-temp'] != null ? Number(req.headers['x-gemini-temp']) : undefined;
-  return {
-    apiKey: apiKey ? String(apiKey) : undefined,
-    model: model ? String(model) : undefined,
-    temperature: Number.isFinite(temperature) ? temperature : undefined
-  };
-}
-
 router.get('/models', async (req, res, next) => {
   try {
-    const data = await listModels({ apiKey: overrides(req).apiKey });
+    const aiOptions = await resolveAiOptions(req);
+    const data = await listModels({ apiKey: aiOptions.apiKey });
     res.json(data);
   } catch (e) {
     next(e);
@@ -38,9 +30,10 @@ router.get('/models', async (req, res, next) => {
 
 router.post('/summary', async (req, res, next) => {
   try {
+    const aiOptions = await resolveAiOptions(req);
     const { data: alerts } = await supabaseAdmin
       .from('alerts')
-      .select('alert_type, message, severity, created_at')
+      .select('alert_type, message, severity, created_at, cylinder_id')
       .eq('is_resolved', false)
       .order('created_at', { ascending: false })
       .limit(10);
@@ -65,7 +58,7 @@ router.post('/summary', async (req, res, next) => {
       }))
     };
 
-    const text = await generateSummary(sys, { ...overrides(req) });
+    const text = await generateSummary(sys, aiOptions);
     res.json({ text });
   } catch (e) {
     next(e);
@@ -74,6 +67,7 @@ router.post('/summary', async (req, res, next) => {
 
 router.post('/cylinder-analysis', async (req, res, next) => {
   try {
+    const aiOptions = await resolveAiOptions(req);
     const { cylinderId, question } = req.body || {};
     if (!cylinderId || !question) return res.status(400).json({ error: 'Missing cylinderId/question' });
 
@@ -86,14 +80,19 @@ router.post('/cylinder-analysis', async (req, res, next) => {
       .single();
     if (error) throw new Error(error.message);
 
-    const { data: readings } = await supabaseAdmin
-      .from('sensor_readings')
+    const { data: telemetry, error: telemetryError } = await supabaseAdmin
+      .from('iot_telemetry')
       .select('*')
-      .eq('cylinder_id', cylinderId)
       .order('created_at', { ascending: false })
-      .limit(200);
+      .limit(5000);
+    if (telemetryError) throw new Error(telemetryError.message);
 
-    const cylinderData = { ...cylinder, readings: readings || [] };
+    const readings = (telemetry || [])
+      .filter((row) => deviceKeysMatch(row.device_id, cylinder.device_id))
+      .slice(0, 200)
+      .map((row) => normalizeTelemetryRow(row, cylinder));
+
+    const cylinderData = { ...cylinder, readings };
 
     const stream = String(req.query.stream || '') === '1';
     if (stream) {
@@ -101,7 +100,7 @@ router.post('/cylinder-analysis', async (req, res, next) => {
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      for await (const chunk of analyzeCylinderStream(cylinderData, question, { ...overrides(req) })) {
+      for await (const chunk of analyzeCylinderStream(cylinderData, question, aiOptions)) {
         res.write(`data: ${chunk.replace(/\n/g, ' ')}\n\n`);
       }
       res.write('data: [DONE]\n\n');
@@ -109,7 +108,7 @@ router.post('/cylinder-analysis', async (req, res, next) => {
       return;
     }
 
-    const text = await analyzeCylinder(cylinderData, question, { ...overrides(req) });
+    const text = await analyzeCylinder(cylinderData, question, aiOptions);
     res.json({ text });
   } catch (e) {
     next(e);
@@ -118,9 +117,10 @@ router.post('/cylinder-analysis', async (req, res, next) => {
 
 router.post('/analytics-report', async (req, res, next) => {
   try {
+    const aiOptions = await resolveAiOptions(req);
     const { from, to, stats } = req.body || {};
     if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
-    const markdown = await generateAnalyticsReport(stats || {}, { from, to }, { ...overrides(req) });
+    const markdown = await generateAnalyticsReport(stats || {}, { from, to }, aiOptions);
     res.json({ markdown });
   } catch (e) {
     next(e);
@@ -129,7 +129,8 @@ router.post('/analytics-report', async (req, res, next) => {
 
 router.post('/test', async (req, res, next) => {
   try {
-    const text = await testGemini(req.body?.prompt || 'Say OK.', { ...overrides(req) });
+    const aiOptions = await resolveAiOptions(req);
+    const text = await testGemini(req.body?.prompt || 'Say OK.', aiOptions);
     res.json({ text });
   } catch (e) {
     next(e);

@@ -1,3 +1,5 @@
+import { parseBooleanFlag } from './booleanFlag.js';
+
 function clampPercent(value) {
   if (value == null || Number.isNaN(Number(value))) return null;
   return Math.max(0, Math.min(100, Number(value)));
@@ -44,31 +46,18 @@ export function buildLiveReading(reading, cylinder) {
     gas_weight_kg: gasWeight,
     gas_level_pct: gasPercent,
     valve_position:
-      reading.valve_position != null
-        ? Boolean(reading.valve_position)
-        : reading.valve_open != null
-          ? Boolean(reading.valve_open)
-          : null,
+      parseBooleanFlag(reading.valve_position) ??
+      parseBooleanFlag(reading.valve_open),
     valve_open:
-      reading.valve_position != null
-        ? Boolean(reading.valve_position)
-        : reading.valve_open != null
-          ? Boolean(reading.valve_open)
-          : null,
+      parseBooleanFlag(reading.valve_position) ??
+      parseBooleanFlag(reading.valve_open),
     leak_detect:
-      reading.leak_detect != null
-        ? Boolean(reading.leak_detect)
-        : reading.leakage_ppm != null
-          ? Number(reading.leakage_ppm) > 0
-          : null,
+      parseBooleanFlag(reading.leak_detect) ??
+      (reading.leakage_ppm != null ? Number(reading.leakage_ppm) > 0 : null),
     leakage_ppm:
       reading.leakage_ppm != null
         ? Number(reading.leakage_ppm)
-        : reading.leak_detect == null
-          ? null
-          : reading.leak_detect
-            ? 200
-            : 0,
+        : null,
     created_at: reading.created_at || reading.timestamp || null
   };
 }

@@ -5,55 +5,10 @@ import { filterRowsByPlacedSourceId, isPlacedSourceId } from '../utils/workspace
 import { buildTelemetryDeviceMap, canonicalizeDeviceKey, deviceKeysMatch } from '../utils/deviceMatch.js';
 import { shapeCylinderRow } from '../utils/cylinderShape.js';
 import { buildLiveCylinder, buildLiveReading } from '../utils/cylinderLive.js';
+import { updateInventoryBuckets } from '../utils/stockInventory.js';
 
 const router = express.Router();
 router.use(requireAuth);
-
-async function getInventoryRow(cylinder_size, gas_type = 'oxygen') {
-  const { data, error } = await supabaseAdmin
-    .from('stock_inventory')
-    .select('*')
-    .eq('cylinder_size', cylinder_size)
-    .eq('gas_type', gas_type)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (data) return data;
-
-  const { data: created, error: insertError } = await supabaseAdmin
-    .from('stock_inventory')
-    .insert({
-      cylinder_size,
-      gas_type,
-      quantity_full: 0,
-      quantity_empty: 0,
-      quantity_in_use: 0,
-      quantity_damaged: 0
-    })
-    .select('*')
-    .single();
-  if (insertError) throw new Error(insertError.message);
-  return created;
-}
-
-async function updateInventoryBuckets({ cylinder_size, gas_type = 'oxygen' }, delta) {
-  const row = await getInventoryRow(cylinder_size, gas_type);
-  const next = {
-    quantity_full: Math.max(0, Number(row.quantity_full || 0) + Number(delta.quantity_full || 0)),
-    quantity_empty: Math.max(0, Number(row.quantity_empty || 0) + Number(delta.quantity_empty || 0)),
-    quantity_in_use: Math.max(0, Number(row.quantity_in_use || 0) + Number(delta.quantity_in_use || 0)),
-    quantity_damaged: Math.max(0, Number(row.quantity_damaged || 0) + Number(delta.quantity_damaged || 0)),
-    last_updated: new Date().toISOString()
-  };
-
-  const { data, error } = await supabaseAdmin
-    .from('stock_inventory')
-    .update(next)
-    .eq('id', row.id)
-    .select('*')
-    .single();
-  if (error) throw new Error(error.message);
-  return data;
-}
 
 async function fetchLatestTelemetryByMappedDevices(cylinders) {
   const latestByCylinderId = new Map();
@@ -162,6 +117,18 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    let type = null;
+    if (payload.type_id) {
+      const { data: typeRow, error: typeError } = await supabaseAdmin
+        .from('cylinder_types')
+        .select('id, type_name')
+        .eq('id', payload.type_id)
+        .maybeSingle();
+      if (typeError) throw new Error(typeError.message);
+      if (!typeRow) return res.status(404).json({ error: 'Cylinder type not found' });
+      type = typeRow;
+    }
+
     const { data, error } = await supabaseAdmin
       .from('cylinders')
       .insert({
@@ -174,6 +141,30 @@ router.post('/', async (req, res, next) => {
       .select('*')
       .single();
     if (error) throw new Error(error.message);
+
+    if (type?.type_name) {
+      try {
+        await updateInventoryBuckets(
+          { cylinder_size: type.type_name, gas_type: 'oxygen' },
+          { quantity_full: -1, quantity_in_use: 1 },
+          { strict: true }
+        );
+        await supabaseAdmin.from('stock_transactions').insert({
+          transaction_type: 'issued',
+          cylinder_size: type.type_name,
+          gas_type: 'oxygen',
+          quantity: 1,
+          reference_id: data.id,
+          reference_type: 'cylinder_create',
+          ward: payload.ward,
+          performed_by: req.user?.email || null,
+          notes: `Cylinder ${payload.cylinder_num} deployed to use`
+        });
+      } catch (stockError) {
+        await supabaseAdmin.from('cylinders').delete().eq('id', data.id);
+        throw stockError;
+      }
+    }
 
     res.status(201).json({ cylinder: shapeCylinderRow(data) });
   } catch (e) {

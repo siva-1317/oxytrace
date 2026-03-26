@@ -1,3 +1,5 @@
+import { parseBooleanFlag } from './booleanFlag.js';
+
 export function normalizeTelemetryRow(row, cylinder = null) {
   const createdAt = row?.created_at || null;
   const deviceId = row?.device_id || row?.esp32_device_id || null;
@@ -12,8 +14,12 @@ export function normalizeTelemetryRow(row, cylinder = null) {
     gasPct = Math.max(0, Math.min(100, (gasWeight / capacity) * 100));
   }
 
-  const leakDetected = row?.leak_detect != null ? Boolean(row.leak_detect) : row?.leakage_ppm != null ? Number(row.leakage_ppm) > 0 : null;
-  const valveOpen = row?.valve_position != null ? Boolean(row.valve_position) : row?.valve_open != null ? Boolean(row.valve_open) : null;
+  const leakDetected =
+    parseBooleanFlag(row?.leak_detect) ??
+    (row?.leakage_ppm != null ? Number(row.leakage_ppm) > 0 : null);
+  const valveOpen =
+    parseBooleanFlag(row?.valve_position) ??
+    parseBooleanFlag(row?.valve_open);
 
   return {
     ...row,
@@ -25,7 +31,7 @@ export function normalizeTelemetryRow(row, cylinder = null) {
     valve_position: valveOpen,
     gas_weight_kg: gasWeight != null ? Number(gasWeight) : null,
     total_weight_kg: totalWeight != null ? Number(totalWeight) : null,
-    leakage_ppm: row?.leakage_ppm != null ? Number(row.leakage_ppm) : leakDetected == null ? null : leakDetected ? 200 : 0,
+    leakage_ppm: row?.leakage_ppm != null ? Number(row.leakage_ppm) : null,
     valve_open: valveOpen,
     gas_level_pct: gasPct != null ? Number(gasPct) : null,
     created_at: createdAt

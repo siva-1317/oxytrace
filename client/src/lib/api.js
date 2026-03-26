@@ -5,6 +5,7 @@ const QUEUE_KEY = 'oxytrace-offline-queue';
 const memoryCache = new Map();
 let syncInFlight = false;
 const queueListeners = new Set();
+const dataRefreshListeners = new Set();
 
 function isOffline() {
   return typeof navigator !== 'undefined' && !navigator.onLine;
@@ -60,6 +61,35 @@ export function setCachedData(cacheKey, data) {
     }
   }
   return payload;
+}
+
+export function clearCachedData(cacheKey) {
+  memoryCache.delete(cacheKey);
+  try {
+    localStorage.removeItem(storageKey(cacheKey));
+  } catch {
+    // ignore storage issues
+  }
+}
+
+export function subscribeDataRefresh(listener) {
+  dataRefreshListeners.add(listener);
+  return () => dataRefreshListeners.delete(listener);
+}
+
+export function notifyDataRefresh(tags = []) {
+  const payload = { tags, updatedAt: Date.now() };
+  dataRefreshListeners.forEach((listener) => listener(payload));
+}
+
+function inferRefreshTags(path) {
+  if (path.startsWith('/api/settings')) return ['settings', 'dashboard', 'cylinders', 'stock'];
+  if (path.startsWith('/api/refills')) return ['refills', 'dashboard', 'cylinders', 'stock', 'alerts'];
+  if (path.startsWith('/api/alerts')) return ['alerts', 'dashboard'];
+  if (path.startsWith('/api/cylinders')) return ['cylinders', 'dashboard', 'stock'];
+  if (path.startsWith('/api/stock')) return ['stock', 'dashboard'];
+  if (path.startsWith('/api/readings')) return ['cylinders', 'dashboard'];
+  return [];
 }
 
 function getQueue() {
@@ -170,6 +200,9 @@ export async function apiJson(path, options = {}) {
     const res = await requestJson(path, { token, method, body, headers });
     const data = await res.json();
     if (method === 'GET' && useCache) setCachedData(key, data);
+    if (method !== 'GET') {
+      notifyDataRefresh(inferRefreshTags(path));
+    }
     return data;
   } catch (error) {
     if (method === 'GET' && useCache) {

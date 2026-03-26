@@ -17,7 +17,7 @@ import {
   YAxis
 } from 'recharts';
 import { useAuth } from '../context/AuthContext.jsx';
-import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
+import { apiJson, formatDateTime, getCachedData, subscribeDataRefresh } from '../lib/api.js';
 import { supabase } from '../lib/supabaseClient.js';
 import { normalizeTelemetryRow } from '../lib/telemetry.js';
 import { mergeCylinderLiveReading } from '../lib/cylinderLive.js';
@@ -70,6 +70,26 @@ export default function CylinderDetail() {
   const [cylinderTypes, setCylinderTypes] = useState([]);
   const [openRefill, setOpenRefill] = useState(false);
   const [refillForm, setRefillForm] = useState({ type_id: '' });
+
+  async function loadDetail() {
+    if (!accessToken) return;
+    const [data, typeData] = await Promise.all([
+      apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey }),
+      apiJson('/api/settings/cylinder-types', { token: accessToken })
+    ]);
+    setDetail(data.cylinder);
+    setRefills(data.refills || []);
+    setCylinderTypes(typeData.cylinderTypes || []);
+  }
+
+  async function loadReadings() {
+    if (!accessToken) return;
+    const data = await apiJson(`/api/readings/${id}?range=${range}`, {
+      token: accessToken,
+      cacheKey: `/api/readings/${id}?range=${range}`
+    });
+    setReadings(data.readings || []);
+  }
 
   useEffect(() => {
     if (!accessToken) return;
@@ -169,6 +189,16 @@ export default function CylinderDetail() {
       supabase.removeChannel(channel);
     };
   }, [id, detail?.id]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeDataRefresh(({ tags }) => {
+      if (tags.some((tag) => ['cylinders', 'refills', 'settings', 'dashboard'].includes(tag))) {
+        loadDetail().catch(() => {});
+        loadReadings().catch(() => {});
+      }
+    });
+    return unsubscribe;
+  }, [accessToken, id, range]);
 
   async function toggleValve() {
     try {

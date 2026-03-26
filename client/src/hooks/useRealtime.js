@@ -1,8 +1,16 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { normalizeTelemetryRow } from '../lib/telemetry.js';
 
 export function useRealtime(onNewReading, onNewAlert) {
+  const readingRef = useRef(onNewReading);
+  const alertRef = useRef(onNewAlert);
+
+  useEffect(() => {
+    readingRef.current = onNewReading;
+    alertRef.current = onNewAlert;
+  }, [onNewReading, onNewAlert]);
+
   useEffect(() => {
     const channel = supabase
       .channel('oxytrace-live')
@@ -15,17 +23,16 @@ export function useRealtime(onNewReading, onNewAlert) {
             raw: payload.new,
             normalized: normalizedReading
           });
-          onNewReading?.(normalizedReading);
+          readingRef.current?.(normalizedReading);
         }
       )
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alerts' }, (payload) =>
-        onNewAlert?.(payload.new)
+        alertRef.current?.(payload.new)
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }

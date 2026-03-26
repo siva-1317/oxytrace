@@ -125,7 +125,7 @@ export default function AlertBanner({ alerts = [] }) {
                             </span>
                             <div className="min-w-0">
                               <div className="truncate text-sm font-semibold text-text">
-                                {alert.cylinder?.cylinder_name || alert.alert_type}
+                                {alert.cylinder?.cylinder_num || alert.cylinder?.cylinder_name || alert.alert_type}
                               </div>
                               <div className="mt-0.5 flex items-center gap-2 text-xs">
                                 <span className={`h-2 w-2 rounded-full ${theme.dot}`} />
@@ -151,7 +151,7 @@ export default function AlertBanner({ alerts = [] }) {
                       </div>
 
                       <div className="mt-4 space-y-3">
-                        <p className="text-sm leading-6 text-text/85">{alert.message}</p>
+                        <p className="whitespace-pre-wrap text-sm leading-6 text-text/85">{alert.message}</p>
 
                         <div className="flex flex-wrap gap-2 text-xs">
                           {alert.cylinder?.ward ? (

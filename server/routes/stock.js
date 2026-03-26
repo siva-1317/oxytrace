@@ -3,21 +3,11 @@ import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
 import { analyzeStock, generateSupplierOrderEmail } from '../services/geminiService.js';
 import { isMailConfigured, sendMail } from '../services/mailService.js';
+import { getInventoryRow, updateInventoryBuckets } from '../utils/stockInventory.js';
+import { resolveAiOptions } from '../utils/aiConfig.js';
 
 const router = express.Router();
 router.use(requireAuth);
-
-function overrides(req) {
-  const apiKey = req.headers['x-gemini-key'];
-  const model = req.headers['x-gemini-model'];
-  const temperature =
-    req.headers['x-gemini-temp'] != null ? Number(req.headers['x-gemini-temp']) : undefined;
-  return {
-    apiKey: apiKey ? String(apiKey) : undefined,
-    model: model ? String(model) : undefined,
-    temperature: Number.isFinite(temperature) ? temperature : undefined
-  };
-}
 
 function csvEscape(v) {
   const s = String(v ?? '');
@@ -200,6 +190,34 @@ function normalizeOrderItems(items) {
   });
 }
 
+function isMissingStockModeColumnError(error) {
+  const message = String(error?.message || error || '');
+  return (
+    message.includes("'stock_mode'") &&
+    message.includes("'stock_order_items'") &&
+    message.toLowerCase().includes('schema cache')
+  );
+}
+
+function omitStockMode(item) {
+  if (!item || typeof item !== 'object') return item;
+  const { stock_mode, ...rest } = item;
+  return rest;
+}
+
+async function insertStockOrderItems(rows) {
+  const payload = Array.isArray(rows) ? rows : [];
+  let result = await supabaseAdmin.from('stock_order_items').insert(payload);
+  if (!result.error || !isMissingStockModeColumnError(result.error)) return result;
+  return supabaseAdmin.from('stock_order_items').insert(payload.map(omitStockMode));
+}
+
+async function updateStockOrderItemById(id, patch) {
+  let result = await supabaseAdmin.from('stock_order_items').update(patch).eq('id', id);
+  if (!result.error || !isMissingStockModeColumnError(result.error)) return result;
+  return supabaseAdmin.from('stock_order_items').update(omitStockMode(patch)).eq('id', id);
+}
+
 async function fetchOrderWithRelations(id) {
   const { data, error } = await supabaseAdmin
     .from('stock_orders')
@@ -208,87 +226,6 @@ async function fetchOrderWithRelations(id) {
     .single();
   if (error) throw new Error(error.message);
   return mapOrderRow(data);
-}
-
-async function getInventoryRow(cylinder_size, gas_type) {
-  const { data, error } = await supabaseAdmin
-    .from('stock_inventory')
-    .select('*')
-    .eq('cylinder_size', cylinder_size)
-    .eq('gas_type', gas_type)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (data) return data;
-
-  const { data: created, error: insErr } = await supabaseAdmin
-    .from('stock_inventory')
-    .insert({
-      cylinder_size,
-      gas_type,
-      quantity_full: 0,
-      quantity_empty: 0,
-      quantity_in_use: 0,
-      quantity_damaged: 0
-    })
-    .select('*')
-    .single();
-  if (insErr) throw new Error(insErr.message);
-  return created;
-}
-
-async function updateInventoryBuckets(
-  { cylinder_size, gas_type },
-  delta,
-  { unit_price = null } = {}
-) {
-  const row = await getInventoryRow(cylinder_size, gas_type);
-  const next = {
-    quantity_full: Math.max(0, Number(row.quantity_full || 0) + Number(delta.quantity_full || 0)),
-    quantity_empty: Math.max(
-      0,
-      Number(row.quantity_empty || 0) + Number(delta.quantity_empty || 0)
-    ),
-    quantity_in_use: Math.max(
-      0,
-      Number(row.quantity_in_use || 0) + Number(delta.quantity_in_use || 0)
-    ),
-    quantity_damaged: Math.max(
-      0,
-      Number(row.quantity_damaged || 0) + Number(delta.quantity_damaged || 0)
-    ),
-    last_updated: new Date().toISOString()
-  };
-  if (unit_price != null && Number.isFinite(Number(unit_price))) next.unit_price = Number(unit_price);
-
-  const { data: updated, error } = await supabaseAdmin
-    .from('stock_inventory')
-    .update(next)
-    .eq('id', row.id)
-    .select('*')
-    .single();
-  if (error) throw new Error(error.message);
-
-  if (Number(updated.quantity_full || 0) < Number(updated.reorder_level || 0)) {
-    const msg = `Low stock: ${updated.cylinder_size} (${updated.gas_type}) full=${updated.quantity_full} reorder=${updated.reorder_level}`;
-    const { data: existing } = await supabaseAdmin
-      .from('alerts')
-      .select('id')
-      .eq('is_resolved', false)
-      .eq('esp32_device_id', 'stock')
-      .eq('alert_type', 'LOW_STOCK')
-      .eq('message', msg)
-      .limit(1);
-    if (!existing?.length) {
-      await supabaseAdmin.from('alerts').insert({
-        esp32_device_id: 'stock',
-        alert_type: 'LOW_STOCK',
-        message: msg,
-        severity: 'warning'
-      });
-    }
-  }
-
-  return updated;
 }
 
 function mapOrderRow(r) {
@@ -482,6 +419,7 @@ router.get('/orders', async (req, res, next) => {
 
 router.post('/orders', async (req, res, next) => {
   try {
+    const aiOptions = await resolveAiOptions(req);
     const body = req.body || {};
     const hospitalProfile = body.hospital_profile || {};
     const sendSupplierEmail = body.send_supplier_email !== false;
@@ -522,7 +460,7 @@ router.post('/orders', async (req, res, next) => {
     if (error) throw new Error(error.message);
 
     const withOrder = calcItems.map((it) => ({ ...it, order_id: created.id }));
-    const { error: itemsErr } = await supabaseAdmin.from('stock_order_items').insert(withOrder);
+    const { error: itemsErr } = await insertStockOrderItems(withOrder);
     if (itemsErr) throw new Error(itemsErr.message);
 
     const out = await fetchOrderWithRelations(created.id);
@@ -561,7 +499,7 @@ router.post('/orders', async (req, res, next) => {
                 }))
               }
             },
-            { ...overrides(req) }
+            aiOptions
           );
           const mailContent = parseAiEmailJson(aiRaw, fallbackContent);
           await sendMail({
@@ -656,7 +594,7 @@ router.patch('/orders/:id', async (req, res, next) => {
       if (deleteErr) throw new Error(deleteErr.message);
 
       const insertRows = nextItems.map((item) => ({ ...item, order_id: id }));
-      const { error: itemErr } = await supabaseAdmin.from('stock_order_items').insert(insertRows);
+      const { error: itemErr } = await insertStockOrderItems(insertRows);
       if (itemErr) throw new Error(itemErr.message);
     }
 
@@ -722,10 +660,11 @@ router.patch('/orders/:id/deliver', async (req, res, next) => {
       if (deltaReceived === 0 && condition === previousCondition && stock_mode === previousMode) continue;
       touched += 1;
 
-      const { error: upErr } = await supabaseAdmin
-        .from('stock_order_items')
-        .update({ quantity_received, condition, stock_mode })
-        .eq('id', ex.id);
+      const { error: upErr } = await updateStockOrderItemById(ex.id, {
+        quantity_received,
+        condition,
+        stock_mode
+      });
       if (upErr) throw new Error(upErr.message);
 
       const previousDelta =
@@ -1128,6 +1067,37 @@ router.post('/inventory/adjust', async (req, res, next) => {
   }
 });
 
+router.patch('/inventory/:id', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    const patch = {};
+    if ('reorder_level' in (req.body || {})) patch.reorder_level = Math.max(0, Number(req.body.reorder_level || 0));
+    if ('unit_price' in (req.body || {})) patch.unit_price = Math.max(0, Number(req.body.unit_price || 0));
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No inventory fields to update' });
+
+    const { data, error } = await supabaseAdmin
+      .from('stock_inventory')
+      .update({
+        ...patch,
+        last_updated: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select('*')
+      .single();
+    if (error) throw new Error(error.message);
+
+    const refreshed = await updateInventoryBuckets(
+      { cylinder_size: data.cylinder_size, gas_type: data.gas_type || 'oxygen' },
+      {},
+      { unit_price: data.unit_price }
+    );
+
+    res.json({ inventory: refreshed });
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post('/inventory/issue', async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -1331,6 +1301,7 @@ router.get('/export/inventory', async (_req, res, next) => {
 
 router.post('/ai-analysis', async (req, res, next) => {
   try {
+    const aiOptions = await resolveAiOptions(req);
     const { data: inventory } = await supabaseAdmin.from('stock_inventory').select('*').limit(5000);
     const { data: orders } = await supabaseAdmin
       .from('stock_orders')
@@ -1346,7 +1317,7 @@ router.post('/ai-analysis', async (req, res, next) => {
       suppliers: suppliers || []
     };
 
-    const markdown = await analyzeStock(stockData, { ...overrides(req) });
+    const markdown = await analyzeStock(stockData, aiOptions);
     res.json({ markdown, generated_at: new Date().toISOString() });
   } catch (e) {
     next(e);

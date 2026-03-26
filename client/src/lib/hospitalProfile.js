@@ -30,6 +30,10 @@ export function saveHospitalProfile(profile) {
   return merged;
 }
 
+export function syncHospitalProfile(profile) {
+  return saveHospitalProfile(profile);
+}
+
 export function getHospitalAddressLines(profile) {
   const data = { ...defaultHospitalProfile, ...(profile || {}) };
   const line1 = [data.address_line_1, data.address_line_2].filter(Boolean).join(', ');

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext.jsx';
-import { apiJson } from '../lib/api.js';
+import { apiJson, subscribeDataRefresh } from '../lib/api.js';
 
 const DEFAULT_THRESHOLDS = {
   low_gas_pct: 20,
@@ -8,31 +8,36 @@ const DEFAULT_THRESHOLDS = {
   leak_warn_ppm: 120,
   leak_danger_ppm: 200,
   low_weight_kg: 10,
-  danger_weight_kg: 5
+  danger_weight_kg: 5,
+  low_in_use_cylinders: 2
 };
 
 export function useThresholdSettings() {
   const { accessToken } = useAuth();
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (!accessToken) return;
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const res = await apiJson('/api/settings/thresholds', { token: accessToken });
-        if (!cancelled && res?.thresholds) setThresholds((prev) => ({ ...prev, ...res.thresholds }));
-      } catch {
-        // keep defaults if settings are unavailable
-      }
+    try {
+      const res = await apiJson('/api/settings/thresholds', { token: accessToken });
+      if (res?.thresholds) setThresholds((prev) => ({ ...prev, ...res.thresholds }));
+    } catch {
+      // keep defaults if settings are unavailable
     }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
   }, [accessToken]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeDataRefresh(({ tags }) => {
+      if (tags.some((tag) => ['settings', 'thresholds', 'cylinders', 'dashboard'].includes(tag))) {
+        refresh();
+      }
+    });
+    return unsubscribe;
+  }, [refresh]);
 
   return thresholds;
 }

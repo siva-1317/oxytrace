@@ -6,7 +6,7 @@ import Skeleton from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 import ReportDownloadButton from '../components/ReportDownloadButton.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { apiJson, formatDateTime, getCachedData } from '../lib/api.js';
+import { apiJson, formatDateTime, getCachedData, subscribeDataRefresh } from '../lib/api.js';
 import { downloadAlertsReportPdf } from '../lib/reportPrint.js';
 
 const tabs = [
@@ -29,7 +29,13 @@ function severityCard(sev) {
 }
 
 function AlertIsland({ alert, open, onToggle, onResolve }) {
-  const cylinderName = alert.cylinder?.cylinder_num || alert.cylinder?.cylinder_name || alert.cylinder_num || alert.cylinder_name || alert.esp32_device_id;
+  const cylinderName =
+    alert.cylinder?.cylinder_num ||
+    alert.cylinder?.cylinder_name ||
+    alert.cylinder_num ||
+    alert.cylinder_name ||
+    alert.cylinder?.device_id ||
+    'Mapped cylinder';
   const ward = alert.cylinder?.ward || alert.ward;
   const icon = alert.severity === 'critical' ? <AlertTriangle size={18} /> : <BellRing size={18} />;
 
@@ -71,7 +77,7 @@ function AlertIsland({ alert, open, onToggle, onResolve }) {
               </div>
             </div>
 
-            <div className="mt-3 rounded-xl border border-border/40 bg-card/20 px-3 py-2 text-sm text-muted">
+            <div className="mt-3 whitespace-pre-wrap rounded-xl border border-border/40 bg-card/20 px-3 py-2 text-sm text-muted">
               {alert.message || 'No additional message provided for this alert.'}
             </div>
           </div>
@@ -165,6 +171,20 @@ export default function Alerts() {
       cancelled = true;
       clearInterval(t);
     };
+  }, [accessToken]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeDataRefresh(({ tags }) => {
+      if (tags.some((tag) => ['alerts', 'dashboard', 'cylinders'].includes(tag)) && accessToken) {
+        apiJson('/api/alerts?status=active&limit=200', {
+          token: accessToken,
+          cacheKey
+        })
+          .then((data) => setAlerts(data.alerts || []))
+          .catch(() => {});
+      }
+    });
+    return unsubscribe;
   }, [accessToken]);
 
   const filtered = useMemo(() => {
@@ -305,3 +325,4 @@ export default function Alerts() {
     </div>
   );
 }
+

@@ -12,6 +12,8 @@ export default function AIAnalysisPanel({ cylinderId }) {
   const abortRef = useRef(null);
 
   const geminiOverrideKey = useMemo(() => localStorage.getItem('oxytrace-gemini-key') || '', []);
+  const geminiOverrideModel = useMemo(() => localStorage.getItem('oxytrace-gemini-model') || '', []);
+  const geminiOverrideTemp = useMemo(() => localStorage.getItem('oxytrace-gemini-temp') || '', []);
 
   async function askAI() {
     if (!question.trim()) return;
@@ -27,7 +29,9 @@ export default function AIAnalysisPanel({ cylinderId }) {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${accessToken}`,
-          ...(geminiOverrideKey ? { 'x-gemini-key': geminiOverrideKey } : {})
+          ...(geminiOverrideKey ? { 'x-gemini-key': geminiOverrideKey } : {}),
+          ...(geminiOverrideModel ? { 'x-gemini-model': geminiOverrideModel } : {}),
+          ...(geminiOverrideTemp ? { 'x-gemini-temp': geminiOverrideTemp } : {})
         },
         body: JSON.stringify({ cylinderId, question }),
         signal: controller.signal

@@ -1359,7 +1359,7 @@ function startConnectionDrag(event, node) {
           <div className="flex items-center justify-between border-b border-border/40 px-4 py-2.5">
             <div className="flex items-center gap-2">
               <div className="h-2 w-2 rounded-full bg-accent/60 animate-pulse" />
-              <span className="text-xs font-semibold text-text">SCADA Workspace</span>
+              <span className="text-xs font-semibold text-text">Mapping Workspace</span>
             </div>
             <div className="flex items-center gap-3 text-xs text-muted">
               <span className="tabular-nums">{nodes.length} nodes</span>

@@ -3,6 +3,7 @@ import { Grid2X2, List, Search } from 'lucide-react';
 import { useCylinders } from '../hooks/useCylinders.js';
 import { useThresholdSettings } from '../hooks/useThresholdSettings.js';
 import { formatDateTime } from '../lib/api.js';
+import { parseBooleanFlag } from '../lib/booleanFlag.js';
 import CylinderCard from '../components/CylinderCard.jsx';
 import DashboardPageLoader from '../components/DashboardPageLoader.jsx';
 import GasLevelBar from '../components/GasLevelBar.jsx';
@@ -70,7 +71,7 @@ export default function Cylinders() {
       </div>
 
       <div className="rounded-2xl border border-border/50 bg-surface/70 px-4 py-3 text-xs text-muted shadow-sm backdrop-blur">
-        Live alert thresholds: gas {thresholds.low_gas_pct}% / {thresholds.danger_gas_pct}% | leakage {thresholds.leak_warn_ppm} / {thresholds.leak_danger_ppm} ppm | weight {thresholds.low_weight_kg} / {thresholds.danger_weight_kg} kg
+        Live alert thresholds: gas {thresholds.low_gas_pct}% / {thresholds.danger_gas_pct}% | weight {thresholds.low_weight_kg} / {thresholds.danger_weight_kg} kg
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -123,7 +124,7 @@ export default function Cylinders() {
                   <th className="px-5 py-4 font-semibold">Location</th>
                   <th className="px-5 py-4 font-semibold">Gas</th>
                   <th className="px-5 py-4 font-semibold">Weight</th>
-                  <th className="px-5 py-4 font-semibold">Leakage</th>
+                  <th className="px-5 py-4 font-semibold">Leak</th>
                   <th className="px-5 py-4 font-semibold">Valve</th>
                   <th className="px-5 py-4 font-semibold">Last reading</th>
                 </tr>
@@ -140,7 +141,9 @@ export default function Cylinders() {
                         <GasLevelBar pct={r.gas_level_pct ?? 0} />
                       </td>
                       <td className="px-5 py-4 font-mono font-medium">{Number(r.gas_weight_kg ?? 0).toFixed(1)} kg</td>
-                      <td className="px-5 py-4 font-mono font-medium">{Number(r.leakage_ppm ?? 0).toFixed(0)} ppm</td>
+                      <td className={`px-5 py-4 font-mono font-medium ${parseBooleanFlag(c.leak_detect ?? r.leak_detect) ? 'text-danger' : 'text-success'}`}>
+                        {parseBooleanFlag(c.leak_detect ?? r.leak_detect) == null ? '--' : parseBooleanFlag(c.leak_detect ?? r.leak_detect) ? 'Detected' : 'Clear'}
+                      </td>
                       <td className="px-5 py-4 font-semibold">
                         <span className={r.valve_open ? 'text-success' : 'text-danger'}>
                           {r.valve_open ? 'OPEN' : 'CLOSED'}
@@ -158,3 +161,4 @@ export default function Cylinders() {
     </div>
   );
 }
+

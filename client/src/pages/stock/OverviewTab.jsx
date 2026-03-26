@@ -19,6 +19,9 @@ export default function OverviewTab() {
   const { accessToken } = useAuth();
   const [aiReport, setAiReport] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const geminiOverrideKey = localStorage.getItem('oxytrace-gemini-key') || '';
+  const geminiOverrideModel = localStorage.getItem('oxytrace-gemini-model') || '';
+  const geminiOverrideTemp = localStorage.getItem('oxytrace-gemini-temp') || '';
 
   const formatCurrency = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(val || 0);
 
@@ -28,6 +31,11 @@ export default function OverviewTab() {
       const res = await apiJson('/api/stock/ai-analysis', {
         method: 'POST',
         token: accessToken,
+        headers: {
+          ...(geminiOverrideKey ? { 'x-gemini-key': geminiOverrideKey } : {}),
+          ...(geminiOverrideModel ? { 'x-gemini-model': geminiOverrideModel } : {}),
+          ...(geminiOverrideTemp ? { 'x-gemini-temp': geminiOverrideTemp } : {})
+        },
         body: { data }
       });
       setAiReport(res.markdown || res.text);
@@ -49,7 +57,7 @@ export default function OverviewTab() {
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-border/50 bg-surface/70 px-4 py-3 text-xs text-muted shadow-sm backdrop-blur">
-        Cylinder alert settings: gas {thresholds.low_gas_pct}% / {thresholds.danger_gas_pct}% | leakage {thresholds.leak_warn_ppm} / {thresholds.leak_danger_ppm} ppm | weight {thresholds.low_weight_kg} / {thresholds.danger_weight_kg} kg
+        Alert settings: gas below {thresholds.low_gas_pct}% | critical gas below {thresholds.danger_gas_pct}% | low in-use stock below {thresholds.low_in_use_cylinders}
       </div>
 
       {/* KPIs */}

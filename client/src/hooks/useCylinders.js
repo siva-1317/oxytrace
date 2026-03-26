@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext.jsx';
-import { apiJson, getCachedData, setCachedData } from '../lib/api.js';
+import { apiJson, getCachedData, setCachedData, subscribeDataRefresh } from '../lib/api.js';
 import { normalizeTelemetryRow } from '../lib/telemetry.js';
 import { mergeCylinderLiveReading } from '../lib/cylinderLive.js';
 import { useRealtime } from './useRealtime.js';
@@ -34,6 +34,17 @@ export function useCylinders() {
 
   useEffect(() => {
     refresh();
+    const timer = setInterval(refresh, 20000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeDataRefresh(({ tags }) => {
+      if (tags.some((tag) => ['cylinders', 'settings', 'refills', 'dashboard', 'alerts'].includes(tag))) {
+        refresh();
+      }
+    });
+    return unsubscribe;
   }, [refresh]);
 
   useRealtime(

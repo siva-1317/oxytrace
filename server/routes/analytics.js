@@ -5,6 +5,7 @@ import { filterRowsByPlacedSourceId } from '../utils/workspaceScope.js';
 import { normalizeTelemetryRow } from '../utils/telemetryNormalize.js';
 import { buildTelemetryDeviceMap, canonicalizeDeviceKey, deviceKeysMatch } from '../utils/deviceMatch.js';
 import { shapeCylinderRow } from '../utils/cylinderShape.js';
+import { getPlacedSourceIdSet } from '../utils/workspaceScope.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -248,6 +249,7 @@ async function computeAnalyticsRange(from, to) {
 router.get('/summary', async (_req, res, next) => {
   try {
     const cylinders = await fetchCylindersWithLatest();
+    const placedCylinderIds = await getPlacedSourceIdSet('cylinder');
 
     const totalCylinders = cylinders.length;
     const activeCylinders = cylinders.filter((c) => c.is_active).length;
@@ -257,11 +259,15 @@ router.get('/summary', async (_req, res, next) => {
         : cylinders.reduce((acc, c) => acc + (c.latest_reading?.gas_level_pct ?? 0), 0) /
           cylinders.length;
 
-    const { count: criticalAlerts } = await supabaseAdmin
+    const { data: criticalAlertRows, error: alertErr } = await supabaseAdmin
       .from('alerts')
-      .select('id', { count: 'exact', head: true })
+      .select('id, cylinder_id, esp32_device_id')
       .eq('is_resolved', false)
       .eq('severity', 'critical');
+    if (alertErr) throw new Error(alertErr.message);
+    const criticalAlerts = (criticalAlertRows || []).filter(
+      (alert) => !alert.cylinder_id || placedCylinderIds.has(String(alert.cylinder_id))
+    ).length;
 
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const { data: telemetry, error: rErr } = await supabaseAdmin

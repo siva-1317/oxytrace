@@ -64,6 +64,8 @@ export default function Analytics() {
   const [aiLoading, setAiLoading] = useState(false);
 
   const geminiOverrideKey = useMemo(() => localStorage.getItem('oxytrace-gemini-key') || '', []);
+  const geminiOverrideModel = useMemo(() => localStorage.getItem('oxytrace-gemini-model') || '', []);
+  const geminiOverrideTemp = useMemo(() => localStorage.getItem('oxytrace-gemini-temp') || '', []);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -104,7 +106,11 @@ export default function Analytics() {
       const res = await apiJson('/api/ai/analytics-report', {
         token: accessToken,
         method: 'POST',
-        headers: geminiOverrideKey ? { 'x-gemini-key': geminiOverrideKey } : undefined,
+        headers: {
+          ...(geminiOverrideKey ? { 'x-gemini-key': geminiOverrideKey } : {}),
+          ...(geminiOverrideModel ? { 'x-gemini-model': geminiOverrideModel } : {}),
+          ...(geminiOverrideTemp ? { 'x-gemini-temp': geminiOverrideTemp } : {})
+        },
         body: { from, to, stats: data?.stats || {} }
       });
       setAiReport(res.markdown || '');

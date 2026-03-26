@@ -8,23 +8,47 @@ import { StockTableShell } from '../../components/DashboardPageLoader.jsx';
 import { loadHospitalProfile } from '../../lib/hospitalProfile.js';
 
 const PAYMENT_HISTORY_MARKER = '__OXYTRACE_PAYMENT_HISTORY__';
-const DEFAULT_ORDER_ITEM = {
-  cylinder_size: 'B-type 10L',
-  gas_type: 'oxygen',
-  stock_mode: 'replace_cylinder',
-  quantity_ordered: 1,
-  unit_price: 0
-};
+const FALLBACK_ORDER_CYLINDER_SIZE = 'B-type 10L';
+
+function createDefaultOrderItem(cylinderTypes = []) {
+  return {
+    cylinder_size: cylinderTypes[0]?.type_name || FALLBACK_ORDER_CYLINDER_SIZE,
+    gas_type: 'oxygen',
+    stock_mode: 'replace_cylinder',
+    quantity_ordered: 1,
+    unit_price: 0
+  };
+}
+
 const buildGeneratedInvoiceNumber = () => {
   const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').replaceAll('T', '').replaceAll('Z', '').replaceAll('.', '').slice(0, 12);
   const nonce = Math.random().toString(36).slice(2, 5).toUpperCase();
-  return `INV-${stamp}-${nonce}`;
+  return 'INV-' + stamp + '-' + nonce;
 };
+
+const buildDeliverItems = (items = [], defaultToRemaining = true) =>
+  items.map((it) => {
+    const ordered = Number(it.quantity_ordered || 0);
+    const receivedSoFar = Number(it.quantity_received || 0);
+    const remaining = Math.max(0, ordered - receivedSoFar);
+    return {
+      id: it.id,
+      cylinder_size: it.cylinder_size,
+      gas_type: it.gas_type,
+      stock_mode: it.stock_mode || 'replace_cylinder',
+      ordered,
+      received_so_far: receivedSoFar,
+      remaining,
+      receive_now: defaultToRemaining ? remaining : 0,
+      condition: it.condition || 'good'
+    };
+  });
 
 export default function OrdersTab() {
   const { accessToken } = useAuth();
   const [orders, setOrders] = useState(() => getCachedData('/api/stock/orders?page=1&pageSize=50')?.orders || []);
   const [suppliers, setSuppliers] = useState(() => getCachedData('/api/stock/suppliers')?.suppliers || []);
+  const [cylinderTypes, setCylinderTypes] = useState(() => getCachedData('/api/settings/cylinder-types')?.cylinderTypes || []);
   const [loading, setLoading] = useState(() => !getCachedData('/api/stock/orders?page=1&pageSize=50'));
   const [search, setSearch] = useState('');
   const [showFilters, setShowFilters] = useState(false);
@@ -62,7 +86,7 @@ export default function OrdersTab() {
     invoice_number: buildGeneratedInvoiceNumber(),
     send_supplier_email: true,
     notes: '',
-    items: [{ ...DEFAULT_ORDER_ITEM }]
+    items: [createDefaultOrderItem(cylinderTypes)]
   });
 
   // Deliver Form State
@@ -71,12 +95,14 @@ export default function OrdersTab() {
   const fetchOrders = async () => {
     if (!getCachedData(ordersCacheKey)) setLoading(true);
     try {
-      const [ordRes, supRes] = await Promise.all([
+      const [ordRes, supRes, typeRes] = await Promise.all([
         apiJson('/api/stock/orders?page=1&pageSize=50', { token: accessToken, cacheKey: ordersCacheKey }),
-        apiJson('/api/stock/suppliers', { token: accessToken, cacheKey: '/api/stock/suppliers' })
+        apiJson('/api/stock/suppliers', { token: accessToken, cacheKey: '/api/stock/suppliers' }),
+        apiJson('/api/settings/cylinder-types', { token: accessToken, cacheKey: '/api/settings/cylinder-types' })
       ]);
       setOrders(ordRes.orders || []);
       setSuppliers(supRes.suppliers || []);
+      setCylinderTypes(typeRes.cylinderTypes || []);
     } catch (err) {
       toast.error('Failed to load orders or suppliers');
     } finally {
@@ -122,7 +148,7 @@ export default function OrdersTab() {
   const handleAddRow = () => {
     setOrderForm({
       ...orderForm,
-      items: [...orderForm.items, { ...DEFAULT_ORDER_ITEM }]
+      items: [...orderForm.items, createDefaultOrderItem(cylinderTypes)]
     });
   };
 
@@ -174,7 +200,7 @@ export default function OrdersTab() {
         invoice_number: buildGeneratedInvoiceNumber(),
         send_supplier_email: true,
         notes: '',
-        items: [{ ...DEFAULT_ORDER_ITEM }]
+        items: [createDefaultOrderItem(cylinderTypes)]
       });
       if (res?.email?.attempted && !res?.email?.sent && res?.email?.reason) {
         toast.error(`Supplier email status: ${res.email.reason}`);
@@ -205,19 +231,7 @@ export default function OrdersTab() {
       toast.success('Delivery recorded');
       const refreshed = (await apiJson(`/api/stock/orders/${activeOrder.id}`, { token: accessToken })).order;
       setActiveOrder(refreshed);
-      setDeliverItems(
-        (refreshed.items || []).map((it) => ({
-          id: it.id,
-          cylinder_size: it.cylinder_size,
-          gas_type: it.gas_type,
-          stock_mode: it.stock_mode || 'replace_cylinder',
-          ordered: it.quantity_ordered,
-          received_so_far: Number(it.quantity_received || 0),
-          remaining: Math.max(0, Number(it.quantity_ordered || 0) - Number(it.quantity_received || 0)),
-          receive_now: 0,
-          condition: 'good'
-        }))
-      );
+      setDeliverItems(buildDeliverItems(refreshed.items, false));
       syncOrderIntoList(refreshed);
       fetchOrders();
     } catch (err) {
@@ -340,19 +354,7 @@ export default function OrdersTab() {
       const res = await apiJson(`/api/stock/orders/${order.id}`, { token: accessToken });
       const fullOrder = res.order;
       setActiveOrder(fullOrder);
-      setDeliverItems(
-        (fullOrder.items || []).map((it) => ({
-          id: it.id,
-          cylinder_size: it.cylinder_size,
-          gas_type: it.gas_type,
-          stock_mode: it.stock_mode || 'replace_cylinder',
-          ordered: it.quantity_ordered,
-          received_so_far: Number(it.quantity_received || 0),
-          remaining: Math.max(0, Number(it.quantity_ordered || 0) - Number(it.quantity_received || 0)),
-          receive_now: 0,
-          condition: 'good'
-        }))
-      );
+      setDeliverItems(buildDeliverItems(fullOrder.items));
       setPaymentForm({
         payment_amount: '',
         payment_method: '',
@@ -495,7 +497,7 @@ export default function OrdersTab() {
       invoice_number: buildGeneratedInvoiceNumber(),
       send_supplier_email: true,
       notes: '',
-      items: [{ ...DEFAULT_ORDER_ITEM }]
+      items: [createDefaultOrderItem(cylinderTypes)]
     });
     setShowNewOrder(true);
   };
@@ -833,9 +835,9 @@ export default function OrdersTab() {
                             <tr key={idx}>
                               <td className="px-2 py-2">
                                 <select value={item.cylinder_size} onChange={e => handleItemChange(idx, 'cylinder_size', e.target.value)} className="w-full rounded border border-border/50 bg-background px-2 py-1.5 text-xs text-text outline-none">
-                                  <option>B-type 10L</option>
-                                  <option>D-type 46L</option>
-                                  <option>Jumbo 47L</option>
+                                  {(cylinderTypes.length ? cylinderTypes : [{ id: 'fallback-order-size', type_name: FALLBACK_ORDER_CYLINDER_SIZE }]).map((type) => (
+                                    <option key={type.id || type.type_name} value={type.type_name}>{type.type_name}</option>
+                                  ))}
                                 </select>
                               </td>
                               <td className="px-2 py-2">
@@ -1385,3 +1387,7 @@ export default function OrdersTab() {
     </div>
   );
 }
+
+
+
+

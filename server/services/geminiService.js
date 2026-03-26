@@ -168,6 +168,25 @@ ${JSON.stringify(emailContext)}`;
   return generateWithRetry(prompt, { apiKey, model, temperature });
 }
 
+export async function generateLeakAlertExplanation(
+  leakContext,
+  { apiKey, model = null, temperature = 0.3 } = {}
+) {
+  const prompt = `You are OxyTrace AI, a hospital oxygen safety assistant.
+Generate a short leak alert explanation for hospital staff.
+
+Rules:
+- Keep it to 2-3 short sentences.
+- Be concrete and safety-focused.
+- Mention why the leak is dangerous and what staff should do immediately.
+- Do not use markdown, bullet points, or headings.
+
+Context:
+${JSON.stringify(leakContext)}`;
+
+  return generateWithRetry(prompt, { apiKey, model, temperature });
+}
+
 export async function testGemini(prompt, { apiKey, model = null, temperature = 0.4 } = {}) {
   return generateWithRetry(prompt || 'Say OK.', { apiKey, model, temperature });
 }

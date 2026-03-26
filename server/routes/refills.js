@@ -1,6 +1,7 @@
 import express from 'express';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { supabaseAdmin } from '../services/supabaseAdmin.js';
+import { updateInventoryBuckets } from '../utils/stockInventory.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -77,7 +78,7 @@ router.post('/', async (req, res, next) => {
 
     const { data: cylinder, error: cylinderError } = await supabaseAdmin
       .from('cylinders')
-      .select('id')
+      .select('id, type_id')
       .eq('id', cylinderId)
       .maybeSingle();
     if (cylinderError) throw new Error(cylinderError.message);
@@ -85,7 +86,7 @@ router.post('/', async (req, res, next) => {
 
     const { data: type, error: typeError } = await supabaseAdmin
       .from('cylinder_types')
-      .select('id')
+      .select('id, type_name, full_weight, empty_weight')
       .eq('id', typeId)
       .maybeSingle();
     if (typeError) throw new Error(typeError.message);
@@ -110,6 +111,43 @@ router.post('/', async (req, res, next) => {
       .eq('id', cylinderId);
     if (updateError) throw new Error(updateError.message);
 
+    try {
+      await updateInventoryBuckets(
+        { cylinder_size: type.type_name, gas_type: 'oxygen' },
+        { quantity_full: -1, quantity_empty: 1 },
+        { strict: true }
+      );
+
+      await supabaseAdmin.from('stock_transactions').insert([
+        {
+          transaction_type: 'issued',
+          cylinder_size: type.type_name,
+          gas_type: 'oxygen',
+          quantity: 1,
+          reference_id: data.id,
+          reference_type: 'refill',
+          ward: data?.cylinders?.ward || null,
+          performed_by: req.user?.email || null,
+          notes: `Replacement full cylinder issued for ${data?.cylinders?.cylinder_num || 'cylinder'}`
+        },
+        {
+          transaction_type: 'returned',
+          cylinder_size: type.type_name,
+          gas_type: 'oxygen',
+          quantity: 1,
+          reference_id: data.id,
+          reference_type: 'refill',
+          ward: data?.cylinders?.ward || null,
+          performed_by: req.user?.email || null,
+          notes: `Empty cylinder returned during refill for ${data?.cylinders?.cylinder_num || 'cylinder'}`
+        }
+      ]);
+    } catch (stockError) {
+      await supabaseAdmin.from('refill_logs').delete().eq('id', data.id);
+      await supabaseAdmin.from('cylinders').update({ type_id: cylinder.type_id || null }).eq('id', cylinderId);
+      throw stockError;
+    }
+
     res.status(201).json({ refill: shapeRefillRow(data) });
   } catch (e) {
     next(e);
@@ -117,3 +155,4 @@ router.post('/', async (req, res, next) => {
 });
 
 export default router;
+
