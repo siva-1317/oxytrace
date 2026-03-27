@@ -215,6 +215,26 @@ export default function CylinderDetail() {
     }
   }
 
+  async function markDamaged() {
+    if (!window.confirm('Are you sure you want to mark this cylinder as damaged? This will remove 1 from in-use stock and add 1 to damaged stock.')) return;
+    try {
+      await apiJson(`/api/cylinders/${id}`, {
+        token: accessToken,
+        method: 'PATCH',
+        body: { condition: 'damaged' }
+      });
+      toast.success('Marked as damaged');
+      const refreshed = await apiJson(`/api/cylinders/${id}`, { token: accessToken, cacheKey: detailCacheKey });
+      setDetail(refreshed.cylinder);
+    } catch (e) {
+      if (e.message.includes('column "condition" of relation "cylinders" does not exist')) {
+        toast.error('The backend database needs to be migrated. Please run the SQL file in the workspace.');
+      } else {
+        toast.error(e.message);
+      }
+    }
+  }
+
   async function submitRefill(e) {
     e.preventDefault();
     try {
@@ -246,9 +266,14 @@ export default function CylinderDetail() {
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 rounded-2xl border border-border/50 bg-surface/80 px-4 py-3 shadow-sm backdrop-blur">
         <div>
-          <div className="text-lg font-semibold">{detail.cylinder_num || detail.cylinder_name}</div>
+          <div className="text-lg font-semibold flex items-center gap-2">
+            {detail.cylinder_num || detail.cylinder_name}
+            {detail.condition === 'damaged' && (
+              <span className="rounded bg-danger/10 px-2 py-0.5 text-xs text-danger border border-danger/20 font-medium tracking-wide">Damaged</span>
+            )}
+          </div>
           <div className="text-xs text-muted">
-            {detail.ward} ? {detail.floor || detail.floor_name || detail.location} ? {detail.device_id || detail.esp32_device_id}
+            {detail.ward} • {detail.floor || detail.floor_name || detail.location} • {detail.device_id || detail.esp32_device_id}
           </div>
         </div>
         <ReportDownloadButton onGenerate={() => downloadCylinderDetailReportPdf({ detail, refills, lineSeries, dailyUsage, range })} />
@@ -264,6 +289,14 @@ export default function CylinderDetail() {
               >
                 Toggle valve
               </button>
+              {detail.condition !== 'damaged' && (
+                <button
+                  onClick={markDamaged}
+                  className="ml-2 rounded-xl border border-danger/50 bg-danger/10 px-4 py-2 text-sm font-medium text-danger transition hover:bg-danger hover:text-white shadow-sm"
+                >
+                  Mark as damaged
+                </button>
+              )}
             </div>
 
             <div className="mt-4 grid grid-cols-1 gap-4">
@@ -437,5 +470,3 @@ export default function CylinderDetail() {
     </div>
   );
 }
-
-

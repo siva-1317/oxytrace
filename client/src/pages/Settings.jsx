@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Save, Trash2 } from 'lucide-react';
+import { Save, Trash2, AlertOctagon } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useCylinders } from '../hooks/useCylinders.js';
 import { apiJson, formatDateTime, notifyDataRefresh } from '../lib/api.js';
@@ -11,7 +11,8 @@ const tabs = [
   { key: 'cylinder-types', label: 'Cylinder Types' },
   { key: 'thresholds', label: 'Alert Thresholds' },
   { key: 'integrations', label: 'Integrations' },
-  { key: 'ai', label: 'AI Settings' }
+  { key: 'ai', label: 'AI Settings' },
+  { key: 'data-management', label: 'Data Management' }
 ];
 
 export default function Settings() {
@@ -34,6 +35,17 @@ export default function Settings() {
   const [newType, setNewType] = useState({ type_name: '', full_weight: '', empty_weight: '' });
   const [profileSaving, setProfileSaving] = useState(false);
   const [aiSaving, setAiSaving] = useState(false);
+
+  const [resetSelection, setResetSelection] = useState({
+    orders: false,
+    inventory: false,
+    telemetry: false,
+    alerts: false,
+    refills: false,
+    cylinders: false,
+    suppliers: false
+  });
+  const [resettingData, setResettingData] = useState(false);
 
   const ingestUrl = `${import.meta.env.VITE_API_URL}/api/readings/ingest`;
   const ai = useMemo(
@@ -274,6 +286,41 @@ export default function Settings() {
       toast.success(res.text || 'OK');
     } catch (e) {
       toast.error(e.message);
+    }
+  }
+
+  async function performDataReset() {
+    const selectedDomains = Object.keys(resetSelection).filter(k => resetSelection[k]);
+    if (!selectedDomains.length) {
+      toast.error('No data types selected');
+      return;
+    }
+
+    const confirmMsg = `WARNING: You are about to permanently delete all data for: ${selectedDomains.join(', ')}. This cannot be undone. Are you absolutely sure?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setResettingData(true);
+    try {
+      await apiJson('/api/settings/reset-data', {
+        method: 'POST',
+        token: accessToken,
+        body: { domains: selectedDomains }
+      });
+      toast.success('Selected data has been reset successfully');
+      setResetSelection({
+        orders: false,
+        inventory: false,
+        telemetry: false,
+        alerts: false,
+        refills: false,
+        cylinders: false,
+        suppliers: false
+      });
+      notifyDataRefresh(['settings', 'dashboard', 'cylinders', 'refills', 'stock', 'alerts']);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setResettingData(false);
     }
   }
 
@@ -546,6 +593,66 @@ export default function Settings() {
           <div className="mt-4 flex gap-2">
             <button onClick={saveAI} disabled={aiSaving} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent2 disabled:opacity-60">{aiSaving ? 'Saving...' : 'Save'}</button>
             <button onClick={testAI} className="rounded-xl border border-border/60 bg-surface/60 px-4 py-2 text-sm transition hover:border-accent/40">Test connection</button>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === 'data-management' ? (
+        <div className="rounded-2xl border border-danger/30 bg-danger/5 p-4 shadow-sm backdrop-blur">
+          <div className="flex items-center gap-2 text-danger">
+            <AlertOctagon size={24} />
+            <h2 className="text-lg font-bold">Danger Zone: Reset Data</h2>
+          </div>
+          <p className="mt-2 text-sm text-muted">
+            Permanently delete data from the database. Select the modules you wish to wipe below.
+            <strong className="block mt-1 font-semibold text-text">WARNING: This action is irreversible.</strong>
+          </p>
+
+          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              { id: 'orders', label: 'Stock Orders & Transactions', desc: 'Deletes all purchase orders and stock movement logs.' },
+              { id: 'inventory', label: 'Stock Inventory', desc: 'Deletes current stock bucket levels. Do this alongside orders.' },
+              { id: 'cylinders', label: 'Cylinder Cards', desc: 'Deletes all cylinder profiles (will also wipe refills).' },
+              { id: 'refills', label: 'Refill History', desc: 'Deletes only the cylinder refilling logs.' },
+              { id: 'telemetry', label: 'IoT Telemetry', desc: 'Deletes all raw sensor data from ESP32 devices.' },
+              { id: 'alerts', label: 'System Alerts', desc: 'Deletes all generated alert notifications.' },
+              { id: 'suppliers', label: 'Suppliers Directory', desc: 'Deletes all supplier profiles.' }
+            ].map((module) => (
+              <label
+                key={module.id}
+                className={`flex cursor-pointer select-none items-start gap-3 rounded-xl border p-3 transition ${
+                  resetSelection[module.id]
+                    ? 'border-danger bg-danger/10 shadow-sm'
+                    : 'border-border/50 bg-background/50 hover:bg-surface'
+                }`}
+              >
+                <div className="mt-0.5">
+                  <input
+                    type="checkbox"
+                    checked={!!resetSelection[module.id]}
+                    onChange={(e) => setResetSelection((prev) => ({ ...prev, [module.id]: e.target.checked }))}
+                    className="h-4 w-4 cursor-pointer rounded border-border/50 bg-surface text-danger focus:ring-danger focus:ring-offset-background"
+                  />
+                </div>
+                <div>
+                  <div className={`text-sm font-semibold ${resetSelection[module.id] ? 'text-danger' : 'text-text'}`}>
+                    {module.label}
+                  </div>
+                  <div className="mt-0.5 text-[11px] leading-snug text-muted">{module.desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div className="mt-6 flex justify-end border-t border-danger/20 pt-4">
+            <button
+              onClick={performDataReset}
+              disabled={resettingData || Object.values(resetSelection).every((v) => !v)}
+              className="inline-flex items-center gap-2 rounded-xl bg-danger px-6 py-2.5 text-sm font-bold text-white shadow-lg shadow-danger/20 transition hover:bg-danger/90 hover:shadow-danger/30 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Trash2 size={16} />
+              {resettingData ? 'Resetting Data...' : 'Permanently Delete Selected'}
+            </button>
           </div>
         </div>
       ) : null}

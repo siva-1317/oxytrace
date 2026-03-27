@@ -219,4 +219,40 @@ router.delete('/cylinder-types/:id', async (req, res, next) => {
   }
 });
 
+router.post('/reset-data', async (req, res, next) => {
+  try {
+    const { domains } = req.body || {};
+    if (!Array.isArray(domains)) return res.status(400).json({ error: 'Domains must be an array' });
+
+    if (domains.includes('orders')) {
+      await supabaseAdmin.from('stock_transactions').delete().not('id', 'is', null);
+      await supabaseAdmin.from('stock_orders').delete().not('id', 'is', null);
+    }
+    if (domains.includes('inventory')) {
+      await supabaseAdmin.from('stock_inventory').delete().not('id', 'is', null);
+    }
+    if (domains.includes('telemetry')) {
+      await supabaseAdmin.from('iot_telemetry').delete().not('id', 'is', null);
+      await supabaseAdmin.from('sensor_readings').delete().not('id', 'is', null);
+    }
+    if (domains.includes('alerts')) {
+      await supabaseAdmin.from('alerts').delete().not('id', 'is', null);
+    }
+    if (domains.includes('refills')) {
+      await supabaseAdmin.from('cylinder_refills').delete().not('id', 'is', null);
+    }
+    if (domains.includes('cylinders')) {
+      await supabaseAdmin.from('cylinder_refills').delete().not('id', 'is', null);
+      await supabaseAdmin.from('cylinders').delete().not('id', 'is', null);
+    }
+    if (domains.includes('suppliers')) {
+      await supabaseAdmin.from('suppliers').delete().not('id', 'is', null);
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
 export default router;

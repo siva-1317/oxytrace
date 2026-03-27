@@ -93,14 +93,18 @@ async function reconcileStockAlert({ alertType, active, severity = 'warning', me
     return;
   }
 
-  const { error: insertError } = await supabaseAdmin
-    .from('alerts')
-    .insert({
-      alert_type: alertType,
-      message,
-      severity
-    });
-  if (insertError) throw new Error(insertError.message);
+  try {
+    const { error: insertError } = await supabaseAdmin
+      .from('alerts')
+      .insert({
+        alert_type: alertType,
+        message,
+        severity
+      });
+    if (insertError) console.warn('[ALERTS] Insert error:', insertError.message);
+  } catch (e) {
+    console.warn('[ALERTS] Error in reconcileStockAlert:', e.message);
+  }
 }
 
 async function syncInventoryAlerts(updatedRow) {
@@ -163,6 +167,10 @@ export async function updateInventoryBuckets(
     .single();
   if (error) throw new Error(error.message);
 
-  await syncInventoryAlerts(updated);
+  try {
+    await syncInventoryAlerts(updated);
+  } catch (e) {
+    console.warn('[STOCK ALERTS] Failed to sync inventory alerts:', e.message);
+  }
   return updated;
 }

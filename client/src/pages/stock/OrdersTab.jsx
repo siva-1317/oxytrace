@@ -92,6 +92,11 @@ export default function OrdersTab() {
   // Deliver Form State
   const [deliverItems, setDeliverItems] = useState([]);
 
+  // Loading States
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [isDelivering, setIsDelivering] = useState(false);
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
+
   const fetchOrders = async () => {
     if (!getCachedData(ordersCacheKey)) setLoading(true);
     try {
@@ -174,6 +179,7 @@ export default function OrdersTab() {
     if (!orderForm.supplier_id) return toast.error('Please select a supplier');
     if (!orderForm.items.length) return toast.error('Add at least one item');
     
+    setIsSubmittingOrder(true);
     try {
       const hospitalProfile = loadHospitalProfile();
       const res = await apiJson('/api/stock/orders', {
@@ -208,12 +214,15 @@ export default function OrdersTab() {
       fetchOrders();
     } catch (err) {
       toast.error('Failed to create order: ' + err.message);
+    } finally {
+      setIsSubmittingOrder(false);
     }
   };
 
   // -- Deliver Handlers --
   const submitDeliver = async (e) => {
     e.preventDefault();
+    setIsDelivering(true);
     try {
       await apiJson(`/api/stock/orders/${activeOrder.id}/deliver`, {
         method: 'PATCH',
@@ -236,6 +245,8 @@ export default function OrdersTab() {
       fetchOrders();
     } catch (err) {
       toast.error('Failed to record delivery: ' + err.message);
+    } finally {
+      setIsDelivering(false);
     }
   };
 
@@ -392,6 +403,7 @@ export default function OrdersTab() {
   const savePaymentDetails = async (e) => {
     e.preventDefault();
     if (!activeOrder) return;
+    setIsSavingPayment(true);
     try {
       const paymentAmount = Math.max(0, Number(paymentForm.payment_amount || 0));
       if (paymentAmount <= 0) {
@@ -468,6 +480,8 @@ export default function OrdersTab() {
       });
     } catch (err) {
       toast.error('Failed to update payment details: ' + err.message);
+    } finally {
+      setIsSavingPayment(false);
     }
   };
 
@@ -884,7 +898,9 @@ export default function OrdersTab() {
               </div>
               <div className="border-t border-border/50 p-4 flex justify-end gap-3 bg-surface/50">
                 <button type="button" onClick={() => setShowNewOrder(false)} className="rounded-xl px-4 py-2 text-sm font-semibold text-muted hover:bg-card hover:text-text transition">Cancel</button>
-                <button type="submit" form="newOrderForm" className="rounded-xl bg-accent px-6 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90">Submit Order</button>
+                <button type="submit" form="newOrderForm" disabled={isSubmittingOrder} className="rounded-xl bg-accent px-6 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90 disabled:opacity-60 disabled:cursor-not-allowed">
+                  {isSubmittingOrder ? 'Submitting...' : 'Submit Order'}
+                </button>
               </div>
             </motion.div>
           </div>
@@ -1053,8 +1069,8 @@ export default function OrdersTab() {
                           Receive the pending quantity from here. `New cylinders` increases total stock. `Replace cylinder` moves empty cylinders into full cylinders without increasing total stock.
                         </div>
                         <div className="flex justify-end">
-                          <button type="submit" className="rounded-xl bg-success px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-success/20 transition hover:bg-success/90">
-                            Confirm Delivery
+                          <button type="submit" disabled={isDelivering} className="rounded-xl bg-success px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-success/20 transition hover:bg-success/90 disabled:opacity-60 disabled:cursor-not-allowed">
+                            {isDelivering ? 'Recording...' : 'Confirm Delivery'}
                           </button>
                         </div>
                       </form>
@@ -1259,8 +1275,8 @@ export default function OrdersTab() {
                   >
                     Cancel
                   </button>
-                  <button type="submit" className="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90">
-                    Save Payment
+                  <button type="submit" disabled={isSavingPayment} className="rounded-xl bg-accent px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent/90 disabled:opacity-60 disabled:cursor-not-allowed">
+                    {isSavingPayment ? 'Saving...' : 'Save Payment'}
                   </button>
                 </div>
               </form>

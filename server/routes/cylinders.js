@@ -249,15 +249,48 @@ router.patch('/:id', async (req, res, next) => {
       'ward',
       'floor',
       'is_active',
-      'type_id'
+      'type_id',
+      'condition'
     ];
     const patch = {};
     for (const k of allowed) {
       if (k in req.body) patch[k] = req.body[k];
     }
 
+    const { data: existing, error: existError } = await supabaseAdmin.from('cylinders').select('type_id, condition').eq('id', id).single();
+    if (existError && !existError.message.includes('column condition does not exist')) throw new Error(existError.message);
+
     const { data, error } = await supabaseAdmin.from('cylinders').update(patch).eq('id', id).select('*').single();
     if (error) throw new Error(error.message);
+
+    if (existing && (patch.type_id !== undefined || patch.condition !== undefined)) {
+      const oldType = existing.type_id;
+      const newType = data.type_id;
+      const oldCond = existing.condition === undefined ? 'good' : String(existing.condition || 'good');
+      const newCond = data.condition === undefined ? 'good' : String(data.condition || 'good');
+
+      if (oldType !== newType || oldCond !== newCond) {
+        const typesToFetch = Array.from(new Set([oldType, newType].filter(Boolean)));
+        let typeNames = {};
+        if (typesToFetch.length) {
+          const { data: tData } = await supabaseAdmin.from('cylinder_types').select('id, type_name').in('id', typesToFetch);
+          (tData || []).forEach(t => typeNames[t.id] = t.type_name);
+        }
+
+        const oldTypeName = typeNames[oldType];
+        const newTypeName = typeNames[newType];
+
+        if (oldTypeName) {
+          const field = oldCond === 'damaged' ? 'quantity_damaged' : 'quantity_in_use';
+          await updateInventoryBuckets({ cylinder_size: oldTypeName, gas_type: 'oxygen' }, { [field]: -1 }).catch(e => console.error(e));
+        }
+        if (newTypeName) {
+          const field = newCond === 'damaged' ? 'quantity_damaged' : 'quantity_in_use';
+          await updateInventoryBuckets({ cylinder_size: newTypeName, gas_type: 'oxygen' }, { [field]: 1 }).catch(e => console.error(e));
+        }
+      }
+    }
+
     const typeMap = await fetchCylinderTypesById([data]);
     res.json({ cylinder: buildLiveCylinder(shapeCylinderRow(data), null, typeMap.get(String(data.type_id || '')) || null) });
   } catch (e) {
@@ -268,8 +301,21 @@ router.patch('/:id', async (req, res, next) => {
 router.delete('/:id', async (req, res, next) => {
   try {
     const id = req.params.id;
+
+    const { data: existing } = await supabaseAdmin.from('cylinders').select('type_id, condition').eq('id', id).maybeSingle().catch(() => ({ data: null }));
+
     const { error } = await supabaseAdmin.from('cylinders').delete().eq('id', id);
     if (error) throw new Error(error.message);
+
+    if (existing?.type_id) {
+       const { data: type } = await supabaseAdmin.from('cylinder_types').select('type_name').eq('id', existing.type_id).maybeSingle();
+       if (type?.type_name) {
+          const isDamaged = String(existing.condition || 'good') === 'damaged';
+          const field = isDamaged ? 'quantity_damaged' : 'quantity_in_use';
+          await updateInventoryBuckets({ cylinder_size: type.type_name, gas_type: 'oxygen' }, { [field]: -1 }).catch(e => console.error(e));
+       }
+    }
+
     res.json({ ok: true });
   } catch (e) {
     next(e);
