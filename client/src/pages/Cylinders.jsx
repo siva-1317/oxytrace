@@ -70,9 +70,7 @@ export default function Cylinders() {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-border/50 bg-surface/70 px-4 py-3 text-xs text-muted shadow-sm backdrop-blur">
-        Live alert thresholds: gas {thresholds.low_gas_pct}% / {thresholds.danger_gas_pct}% | weight {thresholds.low_weight_kg} / {thresholds.danger_weight_kg} kg
-      </div>
+     
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">

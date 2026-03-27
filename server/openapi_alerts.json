@@ -1,0 +1,43 @@
+{
+  "id": {
+    "description": "Note:\nThis is a Primary Key.<pk/>",
+    "format": "bigint",
+    "type": "integer"
+  },
+  "cylinder_id": {
+    "description": "Note:\nThis is a Foreign Key to `cylinders.id`.<fk table='cylinders' column='id'/>",
+    "format": "uuid",
+    "type": "string"
+  },
+  "esp32_device_id": {
+    "format": "text",
+    "type": "string"
+  },
+  "alert_type": {
+    "format": "text",
+    "type": "string"
+  },
+  "message": {
+    "format": "text",
+    "type": "string"
+  },
+  "severity": {
+    "default": "warning",
+    "format": "text",
+    "type": "string"
+  },
+  "is_resolved": {
+    "default": false,
+    "format": "boolean",
+    "type": "boolean"
+  },
+  "resolved_at": {
+    "format": "timestamp with time zone",
+    "type": "string"
+  },
+  "created_at": {
+    "default": "now()",
+    "format": "timestamp with time zone",
+    "type": "string"
+  }
+}
