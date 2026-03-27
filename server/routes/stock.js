@@ -262,7 +262,7 @@ router.get('/overview', async (_req, res, next) => {
 
     const { data: ordersAll, error: ordErr } = await supabaseAdmin
       .from('stock_orders')
-      .select('id, order_number, supplier_id, order_date, expected_delivery_date, actual_delivery_date, status, total_cylinders_ordered, total_cylinders_received, total_amount, payment_status, created_at, suppliers (supplier_name)')
+      .select('id, order_number, supplier_id, order_date, expected_delivery_date, actual_delivery_date, status, total_cylinders_ordered, total_cylinders_received, total_amount, paid_amount, payment_status, created_at, suppliers (supplier_name)')
       .order('order_date', { ascending: false })
       .limit(2000);
     if (ordErr) throw new Error(ordErr.message);
@@ -342,13 +342,31 @@ router.get('/overview', async (_req, res, next) => {
       0
     );
 
+    const totalInvestment = (ordersAll || []).reduce((sum, o) => sum + Number(o.paid_amount || 0), 0);
+    const totalUnpaid = (ordersAll || []).reduce((sum, o) => {
+      const total = Number(o.total_amount || 0);
+      const paid = Math.max(0, Number(o.paid_amount || 0));
+      return sum + Math.max(0, total - paid);
+    }, 0);
+
+    const cylindersInUse = (inventory || []).reduce((a, i) => a + Number(i.quantity_in_use || 0), 0);
+    const cylindersEmpty = (inventory || []).reduce((a, i) => a + Number(i.quantity_empty || 0), 0);
+    const cylindersDamaged = (inventory || []).reduce((a, i) => a + Number(i.quantity_damaged || 0), 0);
+    const cylindersTotal = fullCount + cylindersInUse + cylindersEmpty + cylindersDamaged;
+
     res.json({
       kpis: {
         total_stock_value: stockValue,
         cylinders_full: fullCount,
         pending_orders: pendingLike.length,
         low_stock_alerts: lowStock.length,
-        in_transit_orders: inTransitCount
+        in_transit_orders: inTransitCount,
+        total_investment: totalInvestment,
+        total_unpaid: totalUnpaid,
+        cylinders_in_use: cylindersInUse,
+        cylinders_empty: cylindersEmpty,
+        cylinders_damaged: cylindersDamaged,
+        cylinders_total: cylindersTotal
       },
       inventory: inventory || [],
       upcoming_deliveries: upcomingDeliveries,

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { TrendingUp, AlertCircle, Package, Truck, Sparkles } from 'lucide-react';
+import { TrendingUp, AlertCircle, Package, Truck, Sparkles, Wallet, Banknote, ShieldAlert } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import ReactMarkdown from 'react-markdown';
 import toast from 'react-hot-toast';
@@ -60,8 +60,9 @@ export default function OverviewTab() {
         Alert settings: gas below {thresholds.low_gas_pct}% | critical gas below {thresholds.danger_gas_pct}% | low in-use stock below {thresholds.low_in_use_cylinders}
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {/* Financial KPIs */}
+      <h2 className="text-lg font-semibold text-text mt-6 mb-3">Financial Summary</h2>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-accent">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
@@ -78,12 +79,12 @@ export default function OverviewTab() {
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-success">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-success/10 text-success">
-              <Package size={20} />
+              <Wallet size={20} />
             </div>
             <div>
-              <div className="text-sm font-medium text-muted">Cylinders (Full)</div>
+              <div className="text-sm font-medium text-muted">Total Investments</div>
               <div className="text-xl font-bold text-text">
-                <CountUp end={kpis?.cylinders_full || 0} />
+                <CountUp end={kpis?.total_investment || 0} prefix="₹" separator="," decimals={2} />
               </div>
             </div>
           </div>
@@ -91,32 +92,65 @@ export default function OverviewTab() {
         <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-warning">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-warning/10 text-warning">
-              <Truck size={20} />
+              <Banknote size={20} />
             </div>
             <div>
-              <div className="text-sm font-medium text-muted">Pending Orders</div>
+              <div className="text-sm font-medium text-muted">Outstanding Payment</div>
               <div className="text-xl font-bold text-text">
-                <CountUp end={kpis?.pending_orders || 0} />
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-danger">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-danger/10 text-danger">
-              <AlertCircle size={20} />
-            </div>
-            <div>
-              <div className="text-sm font-medium text-muted">Low Stock Alerts</div>
-              <div className="text-xl font-bold text-text">
-                <CountUp end={kpis?.low_stock_alerts || 0} />
+                <CountUp end={kpis?.total_unpaid || 0} prefix="₹" separator="," decimals={2} />
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+      {/* Operational KPIs */}
+      <h2 className="text-lg font-semibold text-text mt-8 mb-3">Cylinder Status & Operations</h2>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4 lg:grid-cols-3">
+        <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-accent">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+              <Package size={20} />
+            </div>
+            <div>
+              <div className="text-sm font-medium text-muted">Total Owned Cylinders</div>
+              <div className="text-xl font-bold text-text">
+                <CountUp end={kpis?.cylinders_total || 0} />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-success">
+          <div className="flex pl-1 pr-3 flex-col justify-center">
+            <div className="text-xs font-semibold text-success uppercase tracking-wider mb-1">Stock Full</div>
+            <div className="text-xl font-bold text-text">
+              <CountUp end={kpis?.cylinders_full || 0} />
+            </div>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-warning">
+          <div className="flex pl-1 pr-3 flex-col justify-center">
+            <div className="text-xs font-semibold text-warning uppercase tracking-wider mb-1">In Use & Empty</div>
+            <div className="text-xl font-bold text-text">
+              <CountUp end={(kpis?.cylinders_in_use || 0) + (kpis?.cylinders_empty || 0)} />
+              <span className="text-xs font-normal text-muted ml-2">({kpis?.cylinders_in_use || 0} in-use)</span>
+            </div>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-border/50 bg-surface/70 p-4 shadow-sm backdrop-blur transition hover:border-danger">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-danger/10 text-danger">
+              <ShieldAlert size={20} />
+            </div>
+            <div>
+              <div className="text-sm font-medium text-muted">Damaged</div>
+              <div className="text-xl font-bold text-text">
+                <CountUp end={kpis?.cylinders_damaged || 0} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>\n\n      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         {/* Visual Inventory */}
         <div className="xl:col-span-2 space-y-4">
           <h2 className="text-lg font-semibold text-text">Oxygen Stock Levels</h2>
