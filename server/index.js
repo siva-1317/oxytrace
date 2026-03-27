@@ -4,7 +4,8 @@ import cors from 'cors';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
-app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
+const allowedOrigins = (process.env.CLIENT_URL || '').split(',').map(url => url.trim());
+app.use(cors({ origin: allowedOrigins.length > 0 ? allowedOrigins : '*', credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

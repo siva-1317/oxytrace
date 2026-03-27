@@ -1,4 +1,4 @@
-﻿import React, { useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext.jsx';
 import { Navigate } from 'react-router-dom';
@@ -51,7 +51,7 @@ export default function Login() {
             <div className="mt-1 text-sm text-muted">Real-time oxygen monitoring for critical care</div>
           </div>
           <button
-            onClick={signInWithGoogle}
+            onClick={() => signInWithGoogle({ redirectTo: window.location.origin })}
             className="mt-6 w-full rounded-2xl bg-accent px-4 py-3 text-sm font-semibold text-white transition hover:bg-accent2"
           >
             Sign in with Google

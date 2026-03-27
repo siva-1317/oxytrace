@@ -6,11 +6,20 @@ import { apiJson } from '../lib/api';
 import toast from 'react-hot-toast';
 
 export default function SuperAdminDashboard() {
-  const { accessToken, signOut, user } = useAuth();
+  const { accessToken, signOut, user, loading: authLoading } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [isVerifying, setIsVerifying] = useState(true);
+
+  useEffect(() => {
+    // Prevent redirect if we are currently processing an OAuth callback
+    if (window.location.hash.includes('access_token')) return;
+    
+    if (!authLoading && !accessToken) {
+      window.location.href = '/superAdminLogin';
+    }
+  }, [authLoading, accessToken]);
 
   const fetchUsers = async () => {
     try {
