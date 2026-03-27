@@ -123,6 +123,12 @@ async function requestJson(path, { token, method = 'GET', body, headers } = {}) 
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
+    if (res.status === 403 && payload?.error === 'banned') {
+      if (typeof window !== 'undefined' && window.location.pathname !== '/blocked') {
+        setTimeout(() => { window.location.href = '/blocked'; }, 100);
+      }
+      throw new Error('banned');
+    }
     throw new Error(payload.error || `Request failed (${res.status})`);
   }
   return res;

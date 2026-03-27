@@ -14,12 +14,15 @@ import Refills from './pages/Refills.jsx';
 import Settings from './pages/Settings.jsx';
 import Stock from './pages/Stock.jsx';
 import Mapping from './pages/Mapping.jsx';
+import BlockedPage from './pages/BlockedPage.jsx';
+import SuperAdminLogin from './pages/SuperAdminLogin.jsx';
+import SuperAdminDashboard from './pages/SuperAdminDashboard.jsx';
 import { useAuth } from './context/AuthContext.jsx';
 import { apiJson, getCachedData, initializeOfflineSync } from './lib/api.js';
 import Spinner from './components/Spinner.jsx';
 
 function ProtectedRoute({ children }) {
-  const { session, loading } = useAuth();
+  const { session, loading, user } = useAuth();
   const loc = useLocation();
   if (loading)
     return (
@@ -28,6 +31,12 @@ function ProtectedRoute({ children }) {
       </div>
     );
   if (!session) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  
+  // Handle blocked users
+  if (user?.app_metadata?.is_banned && loc.pathname !== '/blocked') {
+    return <Navigate to="/blocked" replace />;
+  }
+  
   return children;
 }
 
@@ -52,6 +61,13 @@ export default function App() {
   });
 
   useEffect(() => initializeOfflineSync(), []);
+
+  useEffect(() => {
+    if (session && localStorage.getItem('admin_login_intent') === 'true') {
+      localStorage.removeItem('admin_login_intent');
+      window.location.href = '/superAdminDashboard';
+    }
+  }, [session]);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -100,6 +116,9 @@ export default function App() {
     <div className="h-full">
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/blocked" element={<BlockedPage />} />
+        <Route path="/superAdminLogin" element={<SuperAdminLogin />} />
+        <Route path="/superAdminDashboard" element={<SuperAdminDashboard />} />
         <Route
           path="/*"
           element={

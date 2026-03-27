@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -18,6 +18,7 @@ import aiRoutes from './routes/ai.js';
 import settingsRoutes from './routes/settings.js';
 import stockRoutes from './routes/stock.js';
 import mappingRoutes from './routes/mapping.js';
+import usersRoutes from './routes/users.js';
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
@@ -31,6 +32,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/stock', stockRoutes);
 app.use('/api/mapping', mappingRoutes);
+app.use('/api/users', usersRoutes);
 
 app.get('/speed-test', (req, res) => {
   const size = Math.min(1024 * 1024, Math.max(64 * 1024, Number(req.query.size || 256 * 1024)));
